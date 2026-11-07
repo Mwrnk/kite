@@ -23,6 +23,72 @@ enum DevTools {
         return false
     }
 
+    /// KITE_TEST_SCRIPT=<name>: drives the running app for end-to-end checks, then quits normally.
+    ///   edit-and-quit  types into the front file, moves the cursor, quits (must not ask to save)
+    ///   report         prints the windows, tabs, unsaved state and cursors, then quits
+    @MainActor
+    static func runTestScript(_ name: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            MainActor.assumeIsolated {
+                switch name {
+                case "edit-and-quit":
+                    // The front tab: an unsaved line, a selection plus two more cursors, scrolled down.
+                    if let c = EditorWindowController.all.first {
+                        let view = c.editorView
+                        view.editor.setSelection(Selection(caret: 0))
+                        view.editor.insertText("# unsaved line\n")
+                        view.editor.setSelection(Selection(anchor: 4, head: 10))
+                        view.editor.addSelection(Selection(caret: 20))
+                        view.editor.addSelection(Selection(caret: 30))
+                        view.editor.addSelection(Selection(anchor: 4, head: 10))   // back to main
+                        view.scroll(NSPoint(x: 0, y: 200))
+                        // And a new untitled tab with some text.
+                        NSDocumentController.shared.newDocument(nil)
+                        c.editorView.editor.insertText("scratch notes")
+                        c.window?.setFrame(NSRect(x: 120, y: 140, width: 1000, height: 650), display: false)
+                    }
+                    print("edited; quitting")
+                case "report":
+                    for c in EditorWindowController.all {
+                        print("window project=\(c.project?.name ?? "none") tabs=\(c.panes.count) frame=\(NSStringFromRect(c.window?.frame ?? .zero))")
+                        for p in c.panes {
+                            let s = p.editor.selection
+                            let extras = p.editor.extraSelections.map { "\($0.anchor)-\($0.head)" }.joined(separator: ",")
+                            let y = p.pendingScrollY ?? p.scrollView.contentView.bounds.origin.y
+                            print("  tab \(p.title) dirty=\(p.document?.isDocumentEdited ?? false) selection=\(s.anchor)-\(s.head) extra=[\(extras)] scrollY=\(y) first=\(p.editor.buffer.lineString(0).debugDescription) active=\(p === c.panes.first { $0.editorView === c.editorView })")
+                        }
+                    }
+                case "note-recent":
+                    // Adds KITE_TEST_FILE to the recent files and redraws the start window (stays open).
+                    if let path = ProcessInfo.processInfo.environment["KITE_TEST_FILE"] {
+                        NSDocumentController.shared.noteNewRecentDocumentURL(URL(fileURLWithPath: path))
+                    }
+                    StartWindow.show()
+                    return
+                case "start-return":
+                    // Press Return in the start window, then report what's open a moment later.
+                    let start = NSApp.windows.first { $0.windowController is StartWindow }
+                    print("start window shown=\(start?.isVisible ?? false)")
+                    if let start, let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                               windowNumber: start.windowNumber, context: nil, characters: "\r",
+                                                               charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36) {
+                        start.sendEvent(event)
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        MainActor.assumeIsolated {
+                            let still = NSApp.windows.contains { $0.windowController is StartWindow && $0.isVisible }
+                            print("after return: start window shown=\(still) editor windows=\(EditorWindowController.all.map { $0.project?.name ?? "none" })")
+                            NSApp.terminate(nil)
+                        }
+                    }
+                    return
+                default: print("unknown test script \(name)")
+                }
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
     private static func value(_ args: [String], _ flag: String) -> String? {
         args.firstIndex(of: flag).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
     }

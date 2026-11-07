@@ -82,9 +82,17 @@ layer, so a Linux UI can reuse them.
 
 ## Next
 
-1. ~~The new look~~: built on 2026-11-06 as layout B · Rail (file list, text tabs, status line, flat
-   colors, hidden window buttons, bots off). Not yet built: 2-pane splits (⌘\\) and session restore;
-   windows don't reopen after quitting for now.
-2. Decide the order of the rest.
+The new look (layout B · Rail) was built on 2026-11-06. Build order, decided on 2026-11-06:
 
-Housekeeping: put Kite in git, and add `scripts/budget.sh`.
+1. **Languages:** the 15 built-in languages listed above. No extras for now. (Skipped for now: the
+   grammars need downloading.)
+2. **Session restore** (done 2026-11-07): each window reopens with its tabs, cursors, scroll positions and unsaved
+   edits. Quitting never asks. Closing a tab with unsaved changes still asks (Save / Don't Save).
+   With nothing to restore, Kite opens a plain window listing recent folders and files (text only).
+3. **Find and replace:** regex, match case, whole word, `$1`, plus Replace in Files with a preview.
+4. **Split panes:** 2 panes (⌘\\ side by side, ⌥⌘\\ stacked).
+5. **Run tasks:** ⌘R with the output panel and clickable `file:line` errors.
+6. **Git marks:** change bars in the gutter, changed files tinted in the list.
+7. **Language servers:** go-to-definition, references, hover docs, rename, error squiggles.
+
+Later: config file and shell commands, Vim mode. Housekeeping before step 1: `scripts/budget.sh`.

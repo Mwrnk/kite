@@ -312,7 +312,7 @@ final class EditorView: NSView, @preconcurrency NSTextInputClient, NSMenuItemVal
         CFAttributedStringSetAttribute(attributed, whole, kCTParagraphStyleAttributeName, tabStyle)
 
         // Syntax colors: spans come ordered so later ones paint over earlier ones.
-        if let syntax {
+        if syntax != nil {
             ensureSpans(around: line)
             for span in spans where span.range.overlaps(range) || (span.range.lowerBound == range.lowerBound && range.isEmpty) {
                 let lo = max(span.range.lowerBound, range.lowerBound) - range.lowerBound
@@ -420,7 +420,6 @@ final class EditorView: NSView, @preconcurrency NSTextInputClient, NSMenuItemVal
         ctx.fill(dirtyRect)
 
         let first = line(atY: dirtyRect.minY), last = line(atY: dirtyRect.maxY)
-        let selection = editor.selection.range
         let isFocused = window?.firstResponder === self && window?.isKeyWindow == true
 
         // Current line (with one cursor only; several would light up half the screen).

@@ -44,7 +44,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.tabbingMode = .disallowed          // Kite draws its own tabs
-        window.isRestorable = false               // restoring whole sessions comes later
+        window.isRestorable = false               // SessionStore restores windows itself
         window.backgroundColor = Chrome.background
         window.minSize = NSSize(width: 480, height: 280)
         super.init(window: window)
@@ -234,6 +234,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
                 pane.view.bottomAnchor.constraint(equalTo: paneHost.bottomAnchor),
             ])
         }
+        if let y = pane.pendingScrollY {
+            pane.pendingScrollY = nil
+            paneHost.layoutSubtreeIfNeeded()
+            pane.editorView.updateFrameSize()
+            pane.editorView.scroll(NSPoint(x: 0, y: y))
+        }
         // The window belongs to the active tab's document (saving, the unsaved state, sheets).
         if let doc = pane.document, !doc.windowControllers.contains(self) { doc.addWindowController(self) }
         pane.onChange = { [weak self] textChanged in self?.paneDidChange(textChanged: textChanged) }
@@ -243,12 +249,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         sidebar?.reveal(pane.document?.fileURL)
         refreshTabs()
         updateStatus()
+        SessionStore.scheduleSave()
     }
 
     private func paneDidChange(textChanged: Bool) {
         if textChanged {
             refreshTabs()
             if !findBar.isHidden { updateFindCount() }
+            SessionStore.scheduleSave()
         }
         updateStatus()
     }
@@ -380,6 +388,129 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         activeIndex = -1
     }
 
+    // MARK: Session
+
+    /// This window as the session stores it. Unsaved text is written to a backup file per tab.
+    func sessionState(backupsIn directory: URL, used: inout Set<String>) -> SessionStore.WindowState? {
+        guard let window, window.isVisible else { return nil }
+        var tabs: [SessionStore.TabState] = []
+        var active = 0
+        for (i, pane) in panes.enumerated() {
+            guard let doc = pane.document else { continue }
+            let editor = pane.editor
+            var backup: String?
+            if doc.isDocumentEdited || (doc.fileURL == nil && editor.buffer.byteCount > 0) {
+                let name = pane.backupName ?? UUID().uuidString + ".txt"
+                pane.backupName = name
+                try? editor.text.write(to: directory.appendingPathComponent(name), atomically: true, encoding: .utf8)
+                used.insert(name)
+                backup = name
+            }
+            if doc.fileURL == nil && backup == nil { continue }   // an empty untitled tab: nothing to keep
+            if i == activeIndex { active = tabs.count }
+            let extras = editor.extraSelections.map { [$0.anchor, $0.head] }
+            tabs.append(SessionStore.TabState(
+                path: doc.fileURL?.path, anchor: editor.selection.anchor, head: editor.selection.head,
+                extra: extras.isEmpty ? nil : extras,
+                // A tab not shown since the restore hasn't scrolled yet: keep where it was.
+                scrollY: Double(pane.pendingScrollY ?? pane.scrollView.contentView.bounds.origin.y), backup: backup))
+        }
+        if tabs.isEmpty && project == nil { return nil }
+        return SessionStore.WindowState(project: project?.root.path, frame: NSStringFromRect(window.frame),
+                                        fileListHidden: sidebar?.isHidden ?? false, active: active, tabs: tabs)
+    }
+
+    /// A new untitled document, of the same type ⌘N makes.
+    private static func makeUntitled() -> TextDocument? {
+        let controller = NSDocumentController.shared
+        guard let type = controller.defaultType else { return nil }
+        return (try? controller.makeUntitledDocument(ofType: type)) as? TextDocument
+    }
+
+    /// Rebuilds a window from the session. Files that no longer exist are skipped, unless they had
+    /// unsaved text, which then opens as an untitled file. Returns false if nothing could be shown.
+    static func restore(_ state: SessionStore.WindowState, backupsIn directory: URL) -> Bool {
+        let fm = FileManager.default
+        let project = state.project.flatMap { fm.fileExists(atPath: $0) ? Project.open(URL(fileURLWithPath: $0)) : nil }
+        var restored: [(doc: TextDocument, tab: SessionStore.TabState, backup: String?)] = []
+        for tab in state.tabs {
+            let backupText = tab.backup.flatMap { try? String(contentsOf: directory.appendingPathComponent($0), encoding: .utf8) }
+            var doc: TextDocument?
+            if let path = tab.path, fm.fileExists(atPath: path) {
+                let url = URL(fileURLWithPath: path)
+                if NSDocumentController.shared.document(for: url) != nil { continue }   // already open
+                doc = try? TextDocument(contentsOf: url, ofType: "Text")
+            } else if backupText != nil {
+                doc = makeUntitled()
+            }
+            guard let doc else { continue }
+            if let backupText {
+                // One undoable step on top of the file as it is on disk, so ⌘Z gets back to it.
+                doc.editor.setSelection(Selection(anchor: 0, head: doc.editor.buffer.byteCount))
+                doc.editor.replaceSelection(with: backupText)
+            }
+            restored.append((doc, tab, tab.backup))
+        }
+        guard !restored.isEmpty || project != nil else { return false }
+
+        // A window opened at launch (a file from Finder or the command line) that belongs to this
+        // folder takes the tabs in, and its file stays in front. Otherwise the first document makes
+        // the window and the rest join it as tabs.
+        let joined = project.flatMap { p in all.first { $0.adopt(p) } }
+        let front = joined?.activePane
+        let controller: EditorWindowController
+        Project.pendingForNewWindow = project
+        if let joined {
+            controller = joined
+            if let first = restored.first?.doc {
+                NSDocumentController.shared.addDocument(first)
+                controller.addTab(for: first)
+            }
+        } else if let first = restored.first?.doc {
+            NSDocumentController.shared.addDocument(first)
+            controller = EditorWindowController(document: first)
+            first.addWindowController(controller)
+        } else {
+            guard let placeholder = makeUntitled() else {
+                Project.pendingForNewWindow = nil
+                return false
+            }
+            NSDocumentController.shared.addDocument(placeholder)
+            controller = EditorWindowController(document: placeholder)
+            placeholder.addWindowController(controller)
+        }
+        Project.pendingForNewWindow = nil
+        for item in restored.dropFirst() {
+            NSDocumentController.shared.addDocument(item.doc)
+            controller.addTab(for: item.doc)
+        }
+
+        if joined == nil, let window = controller.window {
+            window.setFrame(NSRectFromString(state.frame), display: false)
+        }
+        if joined == nil, state.fileListHidden, let sidebar = controller.sidebar, !sidebar.isHidden { controller.toggleSidebar(nil) }
+        for item in restored {
+            guard let pane = controller.panes.first(where: { $0.document === item.doc }) else { continue }
+            let count = item.doc.editor.buffer.byteCount
+            // Extra cursors first, then the main one, since the last cursor added becomes the main one.
+            let main = Selection(anchor: min(item.tab.anchor, count), head: min(item.tab.head, count))
+            let extras = (item.tab.extra ?? []).filter { $0.count == 2 }
+                .map { Selection(anchor: min($0[0], count), head: min($0[1], count)) }
+            item.doc.editor.setSelection(extras.first ?? main)
+            for extra in extras.dropFirst() { item.doc.editor.addSelection(extra) }
+            if !extras.isEmpty { item.doc.editor.addSelection(main) }
+            item.doc.editorTextDidChange()   // shows the unsaved dot for restored edits
+            pane.backupName = item.backup
+            pane.pendingScrollY = CGFloat(item.tab.scrollY)
+        }
+        controller.refreshTabs()
+        let active = front.flatMap { f in controller.panes.firstIndex { $0 === f } }
+            ?? min(max(state.active, 0), max(controller.panes.count - 1, 0))
+        controller.activate(active)
+        controller.showWindow(nil)
+        return true
+    }
+
     // MARK: Status line
 
     private func updateStatus() {
@@ -438,6 +569,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     }
 
     func windowDidResignKey(_ notification: Notification) { activePane?.editorView.needsDisplay = true }
+
+    func windowWillClose(_ notification: Notification) { SessionStore.scheduleSave() }
+
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        StartWindow.dismiss()
+    }
 
     /// Redraws the line numbers (after font size changes).
     func refreshGutter() {

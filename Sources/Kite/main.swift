@@ -2,6 +2,9 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    /// True when last session's windows came back at launch.
+    private var restoredSession = false
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build(recentDelegate: self)
         NSWindow.allowsAutomaticWindowTabbing = true
@@ -40,6 +43,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if SessionStore.hasSession {
+            restoredSession = SessionStore.restore()
+            if !restoredSession && EditorWindowController.all.isEmpty { StartWindow.show() }
+        }
+        if ProcessInfo.processInfo.environment["KITE_LAUNCH_PROBE"] != nil { LaunchProbe.start() }
+        if let script = ProcessInfo.processInfo.environment["KITE_TEST_SCRIPT"] { DevTools.runTestScript(script) }
         // Development aid: KITE_SNAPSHOT=/path.png saves the front window, as drawn, after 2.5 s.
         guard let path = ProcessInfo.processInfo.environment["KITE_SNAPSHOT"] else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
@@ -54,8 +63,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) { SessionStore.save() }
+
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
-        !CommandLine.arguments.dropFirst().contains { !$0.hasPrefix("-") }
+        if SessionStore.hasSession { return false }   // restored once launching finishes
+        return !CommandLine.arguments.dropFirst().contains { !$0.hasPrefix("-") }
+    }
+
+    /// With nothing open, Kite starts on the recent folders and files instead of an empty file.
+    func applicationOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        StartWindow.show()
+        return true
+    }
+
+    /// Clicking the Dock icon with no windows open brings the start window back.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { StartWindow.show() }
+        return false
     }
 
     // Fills File ▸ Open Recent each time it opens.
@@ -99,6 +123,14 @@ final class KiteDocumentController: NSDocumentController {
         super.openDocument(withContentsOf: url, display: displayDocument, completionHandler: completionHandler)
     }
 
+    /// Quitting doesn't ask about unsaved files: the session keeps their text and brings it back.
+    override func reviewUnsavedDocuments(withAlertTitle title: String?, cancellable: Bool, delegate: Any?,
+                                         didReviewAllSelector: Selector?, contextInfo: UnsafeMutableRawPointer?) {
+        SessionStore.saveForQuitting()
+        super.reviewUnsavedDocuments(withAlertTitle: title, cancellable: cancellable, delegate: delegate,
+                                     didReviewAllSelector: didReviewAllSelector, contextInfo: contextInfo)
+    }
+
     /// File ▸ Open… can pick a folder too.
     override func beginOpenPanel(_ openPanel: NSOpenPanel, forTypes inTypes: [String]?,
                                  completionHandler: @escaping (Int) -> Void) {
@@ -132,3 +164,33 @@ let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.regular)
 app.run()
+
+/// For scripts/budget.sh: prints how long it took from process start until the first editor window
+/// is on screen and ready for typing, then quits.
+@MainActor
+enum LaunchProbe {
+    static func start() {
+        // Poll each run-loop turn until an editor window is on screen (it may never become key when
+        // started from a script, since another app is in front).
+        poll()
+    }
+
+    private static func poll() {
+        guard let window = EditorWindowController.all.first?.window, window.isVisible else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.001) { MainActor.assumeIsolated { poll() } }
+            return
+        }
+        window.displayIfNeeded()   // count the first full draw
+        print(String(format: "launch_ms %.0f", (Date().timeIntervalSince1970 - processStart()) * 1000))
+        exit(0)
+    }
+
+    static func processStart() -> TimeInterval {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        sysctl(&mib, 4, &info, &size, nil, 0)
+        let start = info.kp_proc.p_un.__p_starttime
+        return TimeInterval(start.tv_sec) + TimeInterval(start.tv_usec) / 1_000_000
+    }
+}

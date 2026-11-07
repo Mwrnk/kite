@@ -38,7 +38,12 @@ Kite --render file.swift out.png [--light] [--line N] [--select A:B] [--find tex
 KITE_SNAPSHOT=out.png Kite folder file   # saves the real window as drawn, then quits
 Kite --bench big-file.swift          # load, parse, typing and scrolling timings
 Kite --selftest-save file.py         # opens, edits, saves and checks the bytes on disk
+scripts/budget.sh                    # builds release and checks size, launch, memory, typing, scroll
 ```
+
+Environment switches: `KITE_NO_SESSION=1` neither restores nor saves the session;
+`KITE_SESSION_DIR=dir` keeps it somewhere else; `KITE_TEST_SCRIPT=edit-and-quit|report|start-return|note-recent`
+drives the running app for end-to-end checks.
 
 ## The window
 
@@ -49,6 +54,14 @@ nears the top edge. Colors are flat: dimmed comments plus one hue each for keywo
 numbers (View ▸ Rainbow Colors brings back the many-color theme). Bots are off unless turned on in
 View ▸ Show Bots. The design is documented on the Kite Editor Design canvas and in
 [docs/EDITOR-SPEC.md](docs/EDITOR-SPEC.md).
+
+## Sessions
+
+Quitting never asks to save. Next launch, every window comes back with its folder, size, tabs,
+cursors and scroll positions, and unsaved edits come back still unsaved (their text is kept in
+`~/Library/Application Support/Kite/backups` until you save or close the file). Closing a tab with
+unsaved changes still asks. With nothing to restore, or when you click the Dock icon with no windows
+open, Kite shows a plain list of recent folders and files: ↑↓ and Return, or click.
 
 ## Projects
 
