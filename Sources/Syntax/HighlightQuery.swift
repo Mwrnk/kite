@@ -4,7 +4,7 @@ import Foundation
 
 /// A compiled highlights.scm, plus the text predicates (#eq?, #match?, #any-of?) that
 /// tree-sitter leaves for the host to check.
-final class HighlightQuery {
+final class HighlightQuery: @unchecked Sendable {   // built on a background queue, then used only on the main thread
     private let query: OpaquePointer
     private let cursor: OpaquePointer
     private let kinds: [TokenKind?]            // by capture id
@@ -21,13 +21,39 @@ final class HighlightQuery {
     nonisolated(unsafe) private static var cache: [Language: HighlightQuery] = [:]
 
     /// Loads (once) and compiles the query for a language. Main thread only.
+    @MainActor
     static func load(_ language: Language) -> HighlightQuery? {
         if let cached = cache[language] { return cached }
-        guard let url = resourceBundle?.url(forResource: language.rawValue, withExtension: "scm", subdirectory: "Queries"),
-              let source = try? String(contentsOf: url, encoding: .utf8),
-              let query = HighlightQuery(language: language, source: source) else { return nil }
+        guard let query = compile(language) else { return nil }
         cache[language] = query
         return query
+    }
+
+    /// The cached query, if it has been compiled already. Main thread only.
+    @MainActor
+    static func cached(_ language: Language) -> HighlightQuery? { cache[language] }
+
+    /// Compiles on a background queue (it takes up to ~100 ms for big grammars), then hands the
+    /// query to `done` on the main thread. Opening a window doesn't wait for it.
+    @MainActor
+    static func loadInBackground(_ language: Language, done: @escaping @MainActor (HighlightQuery?) -> Void) {
+        if let cached = cache[language] { done(cached); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let query = compile(language)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if let query, cache[language] == nil { cache[language] = query }
+                    done(cache[language])
+                }
+            }
+        }
+    }
+
+    /// Reads and compiles the query file. Safe on any thread.
+    private static func compile(_ language: Language) -> HighlightQuery? {
+        guard let url = resourceBundle?.url(forResource: language.rawValue, withExtension: "scm", subdirectory: "Queries"),
+              let source = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return HighlightQuery(language: language, source: source)
     }
 
     init?(language: Language, source: String) {

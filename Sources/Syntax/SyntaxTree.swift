@@ -13,7 +13,8 @@ public final class SyntaxTree {
     public let language: Language
     private let buffer: TextBuffer
     private let worker: ParseWorker
-    private let highlights: HighlightQuery
+    /// Compiled in the background when the tree is made; no colors until it's ready.
+    private var query: HighlightQuery?
     private var tree: TreeBox?
 
     private var dirty = true
@@ -30,14 +31,20 @@ public final class SyntaxTree {
 
     public init?(language: Language, buffer: TextBuffer) {
         guard buffer.byteCount <= Self.maxBytes,
-              let query = HighlightQuery.load(language),
               let worker = ParseWorker(language: language) else { return nil }
         self.language = language
         self.buffer = buffer
-        self.highlights = query
         self.worker = worker
+        query = HighlightQuery.cached(language)
         buffer.addObserver { [weak self] edit in self?.apply(edit) }
         scheduleParse()
+        if query == nil {
+            HighlightQuery.loadInBackground(language) { [weak self] query in
+                guard let self, self.query == nil else { return }
+                self.query = query
+                if query != nil { self.onUpdate?() }
+            }
+        }
     }
 
     private func apply(_ edit: BufferEdit) {
@@ -86,6 +93,7 @@ public final class SyntaxTree {
 
     /// Parses right now on the calling thread (for tests and tools). The UI never needs this.
     public func parseSynchronously() {
+        if query == nil { query = HighlightQuery.load(language) }   // tools and tests want colors right away
         guard dirty || parsing || tree == nil else { return }
         let snapshot = buffer.storage
         let old = tree?.copy()
@@ -101,8 +109,8 @@ public final class SyntaxTree {
 
     /// Highlighted spans overlapping `range`, ordered so later spans should paint over earlier ones.
     public func highlights(in range: Range<Int>) -> [HighlightSpan] {
-        guard let tree else { return [] }
-        return highlights.run(on: ts_tree_root_node(tree.pointer), range: range, buffer: buffer)
+        guard let tree, let query else { return [] }
+        return query.run(on: ts_tree_root_node(tree.pointer), range: range, buffer: buffer)
     }
 
     /// True once a parse result matches the current text.

@@ -15,6 +15,10 @@ final class EditorPane {
     private(set) weak var document: TextDocument?
     /// The file shown when there's no document (offscreen rendering).
     var fileURL: URL?
+    /// The backup file name this tab's unsaved text is kept in (stable, so saves overwrite it).
+    var backupName: String?
+    /// Where to scroll once the pane is first on screen (after a session restore).
+    var pendingScrollY: CGFloat?
     /// Called after text or selection changes, once the pane has done its own bookkeeping.
     var onChange: ((_ textChanged: Bool) -> Void)?
 
