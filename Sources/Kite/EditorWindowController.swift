@@ -19,6 +19,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private let root = ChromeRootView()
     private let split = HairlineSplitView()
     private var sidebar: ProjectSidebar?
+    var projectSidebar: ProjectSidebar? { sidebar }
     private let mainColumn = NSStackView()
     private let tabBar = TabBar()
     private let paneHost = ChromeView()
@@ -28,11 +29,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private let statusRight = Chrome.label()
     private var closingConfirmed = false
 
-    // Find bar.
-    private let findBar = ChromeView()
-    private let findField = NSTextField()
-    private let findCount = Chrome.label()
-    private let caseButton = Chrome.textButton("Aa", target: nil, action: nil)
+    let findBar = FindBar()
 
     /// Builds a window showing `document`. With no document (offscreen rendering), shows `editor`.
     init(document: TextDocument?, editor: TextEditor? = nil, language: Language? = nil, fileURL: URL? = nil) {
@@ -93,7 +90,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         // Tabs, find bar and the open file, stacked.
         tabBar.onSelect = { [weak self] i in self?.activate(i) }
         tabBar.onClose = { [weak self] i in self?.closeTab(i) }
-        buildFindBar()
+        findBar.pane = { [weak self] in self?.activePane }
+        findBar.focusEditor = { [weak self] in
+            guard let self, let pane = self.activePane else { return }
+            self.window?.makeFirstResponder(pane.editorView)
+        }
         mainColumn.orientation = .vertical
         mainColumn.spacing = 0
         mainColumn.alignment = .leading
@@ -146,42 +147,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         window.contentView = root
     }
 
-    private func buildFindBar() {
-        findBar.hairlines = [.maxY]
-        findField.isBordered = false
-        findField.drawsBackground = false
-        findField.focusRingType = .none
-        findField.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular)
-        findField.textColor = Chrome.text
-        findField.placeholderAttributedString = NSAttributedString(string: "text to find", attributes: [
-            .font: NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular), .foregroundColor: Chrome.faint,
-        ])
-        findField.delegate = self
-        findField.cell?.usesSingleLineMode = true
-        caseButton.target = self
-        caseButton.action = #selector(toggleCase(_:))
-        caseButton.toolTip = "Match case"
-        let previous = Chrome.textButton("↑", target: self, action: #selector(findPrevious(_:)))
-        let next = Chrome.textButton("↓", target: self, action: #selector(findNext(_:)))
-        previous.toolTip = "Previous match (⇧⌘G)"
-        next.toolTip = "Next match (⌘G)"
-        let label = Chrome.label("find")
-        label.widthAnchor.constraint(equalToConstant: 52).isActive = true
-        let row = NSStackView(views: [label, findField, findCount, caseButton, previous, next])
-        row.spacing = 16
-        row.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
-        row.translatesAutoresizingMaskIntoConstraints = false
-        findField.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        findBar.addSubview(row)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: findBar.leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: findBar.trailingAnchor),
-            row.centerYAnchor.constraint(equalTo: findBar.centerYAnchor),
-            findBar.heightAnchor.constraint(equalToConstant: 36),
-        ])
-        findBar.isHidden = true
-    }
-
     private func setWindowButtonsVisible(_ visible: Bool) {
         for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             window?.standardWindowButton(kind)?.animator().alphaValue = visible ? 1 : 0
@@ -196,9 +161,18 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     // MARK: Tabs
 
     /// Shows `document` in a new tab (or its existing one).
-    func addTab(for document: TextDocument) {
-        if let existing = panes.firstIndex(where: { $0.document === document }) { activate(existing); return }
+    /// With `activate` false, the tab is added behind the current one (Replace in Files).
+    func addTab(for document: TextDocument, activate shouldActivate: Bool = true) {
+        if let existing = panes.firstIndex(where: { $0.document === document }) {
+            if shouldActivate { activate(existing) }
+            return
+        }
         let pane = EditorPane(editor: document.editor, document: document, language: document.language)
+        if !shouldActivate {
+            panes.append(pane)
+            refreshTabs()
+            return
+        }
         let at = panes.isEmpty ? 0 : activeIndex + 1
         panes.insert(pane, at: at)
         if activeIndex >= at { activeIndex += 1 }
@@ -243,7 +217,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         // The window belongs to the active tab's document (saving, the unsaved state, sheets).
         if let doc = pane.document, !doc.windowControllers.contains(self) { doc.addWindowController(self) }
         pane.onChange = { [weak self] textChanged in self?.paneDidChange(textChanged: textChanged) }
-        pane.editorView.findQuery = findBar.isHidden ? "" : findField.stringValue
+        if let old, old !== pane { old.editorView.showsFind = false; old.find.invalidate() }
+        findBar.paneChanged()
         emptyLabel.isHidden = true
         window?.makeFirstResponder(pane.editorView)
         sidebar?.reveal(pane.document?.fileURL)
@@ -255,9 +230,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private func paneDidChange(textChanged: Bool) {
         if textChanged {
             refreshTabs()
-            if !findBar.isHidden { updateFindCount() }
+            findBar.textChanged()
             SessionStore.scheduleSave()
         }
+        if !findBar.isHidden { findBar.updateCount() }
         updateStatus()
     }
 
@@ -363,6 +339,20 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             }
         }
         return false
+    }
+
+    /// File ▸ Save All (⌥⌘S): every file with unsaved changes, in every window. Untitled files
+    /// are left for you to name.
+    @objc func saveAllFiles(_ sender: Any?) {
+        let dirty = NSDocumentController.shared.documents.compactMap { $0 as? TextDocument }
+            .filter { $0.isDocumentEdited && $0.fileURL != nil }
+        saveAll(dirty) { MainActor.assumeIsolated { EditorWindowController.all.forEach { $0.refreshTabs() } } }
+    }
+
+    /// Edit ▸ Undo Replace in Files: puts back what the last saved Replace in Files changed.
+    @objc func undoReplaceInFiles(_ sender: Any?) {
+        let report = ProjectReplace.undoLast()
+        sidebar?.search.refresh(notice: report)
     }
 
     private func saveAll(_ documents: [TextDocument], then done: @escaping () -> Void) {
@@ -530,6 +520,10 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             parts.append(format.lineEnding.label)
         }
         parts.append(pane.language?.displayName ?? "Plain Text")
+        // Where the caret is in the code: "Point › move".
+        if let symbols = pane.editorView.syntax?.enclosingSymbols(at: e.caret), !symbols.isEmpty {
+            parts.insert(symbols.suffix(2).map(\.name).joined(separator: " › "), at: 0)
+        }
         statusRight.stringValue = parts.joined(separator: "    ")
     }
 
@@ -591,6 +585,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         guard sidebar == nil else { return }
         let sidebar = ProjectSidebar(project: project)
         sidebar.onOpen = { [weak self] url, match in self?.openFromProject(url, select: match) }
+        sidebar.onReplace = { [weak self, weak sidebar] plans, query, template in
+            guard let self else { return }
+            ProjectReplace.apply(plans, query: query, template: template, in: self) { report in
+                sidebar?.search.refresh(notice: report)
+            }
+        }
         split.insertArrangedSubview(sidebar, at: 0)
         split.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
         split.setHoldingPriority(NSLayoutConstraint.Priority(250), forSubviewAt: 1)
@@ -624,6 +624,20 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     @objc func quickOpen(_ sender: Any?) {
         guard let window else { return }
         QuickOpenPanel.show(over: window, project: project) { [weak self] url in self?.openFromProject(url) }
+    }
+
+    /// ⇧⌘O: the file's functions, types and methods; type a few letters, Return jumps there.
+    @objc func goToSymbol(_ sender: Any?) {
+        guard let window, let pane = activePane, let syntax = pane.editorView.syntax else { NSSound.beep(); return }
+        let symbols = syntax.symbols()
+        let items = symbols.map { PickerItem(title: $0.name, detail: $0.kind, indent: $0.depth) }
+        QuickOpenPanel.show(over: window, items: items, placeholder: "symbol in \(pane.title)") { [weak self, weak pane] i in
+            guard let self, let pane, pane === self.activePane else { return }
+            let s = symbols[i]
+            pane.editorView.scroll(NSPoint(x: 0, y: max(pane.editorView.lineTop(pane.editor.buffer.line(containing: s.range.lowerBound)) - 80, 0)))
+            pane.editor.setSelection(Selection(anchor: s.nameRange.lowerBound, head: s.nameRange.upperBound))
+            self.window?.makeFirstResponder(pane.editorView)
+        }
     }
 
     @objc func toggleSidebar(_ sender: Any?) {
@@ -672,14 +686,22 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
         case #selector(findInProject(_:)): return sidebar != nil
+        case #selector(undoReplaceInFiles(_:)): return !ProjectReplace.lastSaved.isEmpty
+        case #selector(saveAllFiles(_:)):
+            return NSDocumentController.shared.documents.contains { $0.isDocumentEdited && $0.fileURL != nil }
         case #selector(toggleSidebar(_:)):
             item.state = sidebar.map { $0.isHidden ? .off : .on } ?? .off
             return sidebar != nil
         case #selector(toggleBots(_:)): item.state = BotsOverlay.isEnabled ? .on : .off
         case #selector(toggleRainbowColors(_:)): item.state = UserDefaults.standard.bool(forKey: "rainbowColors") ? .on : .off
         case #selector(nextTab(_:)), #selector(previousTab(_:)): return panes.count > 1
-        case #selector(showFindBar(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)), #selector(useSelectionForFind(_:)):
+        case #selector(showFindBar(_:)), #selector(showFindAndReplace(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)),
+             #selector(useSelectionForFind(_:)), #selector(selectAllMatches(_:)):
             return activePane != nil
+        case #selector(toggleFindCase(_:)): item.state = findBar.options.caseSensitive ? .on : .off
+        case #selector(toggleFindWord(_:)): item.state = findBar.options.wholeWord ? .on : .off
+        case #selector(toggleFindRegex(_:)): item.state = findBar.options.regex ? .on : .off
+        case #selector(toggleFindInSelection(_:)): item.state = findBar.isSearchingSelection ? .on : .off
         default: break
         }
         return true
@@ -689,86 +711,17 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     var isFindBarVisible: Bool { !findBar.isHidden }
 
-    @objc func showFindBar(_ sender: Any?) {
-        guard let pane = activePane else { return }
-        findBar.isHidden = false
-        if !pane.editor.selection.isEmpty, !pane.editor.selectedText.contains("\n") {
-            findField.stringValue = pane.editor.selectedText
-        }
-        window?.makeFirstResponder(findField)
-        findField.currentEditor()?.selectAll(nil)
-        applyQuery()
-    }
-
-    func hideFindBar() {
-        findBar.isHidden = true
-        activePane?.editorView.findQuery = ""
-        if let pane = activePane { window?.makeFirstResponder(pane.editorView) }
-    }
-
-    @objc private func toggleCase(_ sender: Any?) {
-        caseButton.isOn.toggle()
-        activePane?.editorView.findCaseSensitive = caseButton.isOn
-        applyQuery()
-    }
-
-    @objc func useSelectionForFind(_ sender: Any?) {
-        guard let pane = activePane else { return }
-        let text = pane.editor.selectedText
-        guard !text.isEmpty else { return }
-        findField.stringValue = text
-        pane.editorView.findQuery = isFindBarVisible ? text : ""
-    }
-
-    private func applyQuery() {
-        activePane?.editorView.findQuery = findField.stringValue
-        updateFindCount()
-    }
-
-    private func updateFindCount() {
-        let query = findField.stringValue
-        guard !query.isEmpty, let pane = activePane else { findCount.stringValue = ""; return }
-        let buffer = pane.editor.buffer
-        // Counting is a full scan; skip it for very large files.
-        guard buffer.byteCount < 4_000_000 else { findCount.stringValue = ""; return }
-        let n = pane.editor.matches(of: query, in: 0..<buffer.byteCount, caseSensitive: caseButton.isOn).count
-        findCount.stringValue = n == 1 ? "1 match" : "\(n) matches"
-    }
-
-    func controlTextDidChange(_ obj: Notification) {
-        applyQuery()
-        // Jump to the first match at or after the selection start as you type.
-        guard let e = activePane?.editor else { return }
-        if let r = e.find(findField.stringValue, from: e.selection.range.lowerBound, caseSensitive: caseButton.isOn) {
-            e.setSelection(Selection(anchor: r.lowerBound, head: r.upperBound))
-        }
-    }
-
-    @objc func findNext(_ sender: Any?) { find(backwards: false) }
-    @objc func findPrevious(_ sender: Any?) { find(backwards: true) }
-
-    private func find(backwards: Bool) {
-        guard let pane = activePane else { return }
-        let query = findField.stringValue
-        guard !query.isEmpty else { showFindBar(nil); return }
-        pane.editorView.findQuery = isFindBarVisible ? query : ""
-        let e = pane.editor
-        let from = backwards ? e.selection.range.lowerBound : e.selection.range.upperBound
-        guard let r = e.find(query, from: from, backwards: backwards, caseSensitive: caseButton.isOn) else {
-            NSSound.beep(); return
-        }
-        e.setSelection(Selection(anchor: r.lowerBound, head: r.upperBound))
-    }
-
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        switch selector {
-        case #selector(NSResponder.cancelOperation(_:)): hideFindBar()
-        case #selector(NSResponder.insertNewline(_:)):
-            NSApp.currentEvent?.modifierFlags.contains(.shift) == true ? findPrevious(nil) : findNext(nil)
-        default: return false
-        }
-        return true
-    }
+    @objc func showFindBar(_ sender: Any?) { findBar.show(replacing: false) }
+    @objc func showFindAndReplace(_ sender: Any?) { findBar.show(replacing: true) }
+    func hideFindBar() { findBar.hide() }
+    @objc func useSelectionForFind(_ sender: Any?) { findBar.useSelection() }
+    @objc func findNext(_ sender: Any?) { findBar.findNext(sender) }
+    @objc func findPrevious(_ sender: Any?) { findBar.findPrevious(sender) }
+    @objc func selectAllMatches(_ sender: Any?) { findBar.selectAllMatches(sender) }
+    @objc func toggleFindCase(_ sender: Any?) { findBar.toggleCase(sender) }
+    @objc func toggleFindWord(_ sender: Any?) { findBar.toggleWord(sender) }
+    @objc func toggleFindRegex(_ sender: Any?) { findBar.toggleRegex(sender) }
+    @objc func toggleFindInSelection(_ sender: Any?) { findBar.toggleSelection(sender) }
 }
 
 /// The window's background view. Shows the window buttons while the pointer is near the top edge.

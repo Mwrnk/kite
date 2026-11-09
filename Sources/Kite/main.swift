@@ -51,13 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let script = ProcessInfo.processInfo.environment["KITE_TEST_SCRIPT"] { DevTools.runTestScript(script) }
         // Development aid: KITE_SNAPSHOT=/path.png saves the front window, as drawn, after 2.5 s.
         guard let path = ProcessInfo.processInfo.environment["KITE_SNAPSHOT"] else { return }
+        guard ProcessInfo.processInfo.environment["KITE_TEST_SCRIPT"] == nil else { return }   // the script takes it
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             MainActor.assumeIsolated {
-                guard let view = NSApp.orderedWindows.first?.contentView?.superview ?? NSApp.orderedWindows.first?.contentView,
-                      let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds),
-                      let layer = view.layer, let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return }
-                layer.render(in: ctx.cgContext)   // the bitmap context is already at the screen's scale
-                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                DevTools.snapshotFrontWindow(to: path)
                 NSApp.terminate(nil)
             }
         }
@@ -150,6 +147,9 @@ enum RecentFolders {
     }
 
     static func add(_ url: URL) {
+        // Scripted test runs don't belong in your recent folders.
+        let env = ProcessInfo.processInfo.environment
+        guard env["KITE_TEST_SCRIPT"] == nil, env["KITE_SESSION_DIR"] == nil, env["KITE_NO_SESSION"] == nil else { return }
         var paths = UserDefaults.standard.stringArray(forKey: key) ?? []
         paths.removeAll { $0 == url.path }
         paths.insert(url.path, at: 0)

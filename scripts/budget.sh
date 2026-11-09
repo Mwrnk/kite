@@ -32,6 +32,24 @@ done
 launch=$(printf "%s\n" "${times[@]}" | sort -n | sed -n 3p)
 report "launch to typing (median of 5)" "$launch" ms 150
 
+# Tracked, not enforced yet: launching into a restored folder with three tabs (the file list's
+# first build is the slow part). Reported so it doesn't quietly get worse.
+mkdir -p "$TMP/session"
+cat > "$TMP/session/session.json" <<JSON
+{"windows":[{"project":"$PWD","frame":"{{120, 140}, {1000, 650}}","fileListHidden":false,"active":0,
+ "tabs":[{"path":"$PWD/$SAMPLE","anchor":0,"head":0,"scrollY":0},
+         {"path":"$PWD/Sources/Kite/main.swift","anchor":0,"head":0,"scrollY":0},
+         {"path":"$PWD/README.md","anchor":0,"head":0,"scrollY":0}]}]}
+JSON
+times=()
+for i in 1 2 3 4 5; do
+    t=$(env -u KITE_NO_SESSION KITE_SESSION_DIR="$TMP/session" KITE_LAUNCH_PROBE=1 perl -e 'alarm 10; exec @ARGV' "$BIN" 2>/dev/null </dev/null | awk '/launch_ms/ {print $2}')
+    times+=(${t:-99999})
+done
+restored=$(printf "%s\n" "${times[@]}" | sort -n | sed -n 3p)
+verdict=pass; (( restored >= 150 )) && verdict="over (tracked)"
+printf "%-34s %8s %-4s limit %6s %-4s %s\n" "launch, restoring a folder" "$restored" ms 150 ms "$verdict"
+
 # Memory with a mid-size project open (Kite's own folder and a large file).
 "$BIN" "$PWD" "$PWD/$SAMPLE" >/dev/null 2>&1 </dev/null &
 pid=$!
@@ -54,6 +72,8 @@ worst=$(echo "$bench" | awk '/worst single keystroke/ {print $4}')
 scroll_total=$(echo "$bench" | awk '/scroll through 50 screens/ {print $(NF-1)}')
 scroll=$(echo "$scroll_total / 50" | bc -l | xargs printf "%.2f")
 report "worst keystroke, 5 MB file" "$worst" ms 8
+worst_find=$(echo "$bench" | awk '/worst keystroke, find open/ {print $5}')
+report "worst keystroke, regex find open" "${worst_find:-99999}" ms 8
 report "scroll, per screen (120 fps = 8.3)" "$scroll" ms 8.3
 
 exit $failed
