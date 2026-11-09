@@ -16,11 +16,16 @@ final class ProjectSidebar: ChromeView, NSOutlineViewDataSource, NSOutlineViewDe
     private let searchButton = Chrome.textButton("search", target: nil, action: nil)
     private let body = NSView()
     private var activeURL: URL?
-    private lazy var search: ProjectSearchView = {
+    /// Project search (and replace). Made the first time it's shown.
+    private(set) lazy var search: ProjectSearchView = {
         let view = ProjectSearchView(project: project)
         view.onOpen = { [weak self] url, match in self?.onOpen?(url, match) }
+        view.onReplace = { [weak self] plans, query, template in self?.onReplace?(plans, query, template) }
+        view.openFiles = { ProjectReplace.openTexts() }
         return view
     }()
+    /// Called when project search asks to replace.
+    var onReplace: (([ProjectReplace.FilePlan], FindQuery, String) -> Void)?
 
     init(project: Project) {
         self.project = project

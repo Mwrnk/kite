@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon.png" width="128" alt="Kite"></p>
+
 # Kite
 
 A small, fast, native code editor for macOS, for people who write code by hand. Swift + AppKit, Core Text
@@ -9,7 +11,8 @@ The base for a live AI code tutor (coming later).
 ```bash
 scripts/bundle.sh            # builds build/Kite.app (release)
 open build/Kite.app
-swift test                   # 76 tests: buffer, editing, undo, multiple cursors, brackets, search, syntax
+swift test                   # 99 tests: buffer, editing, undo, multiple cursors, brackets, find, syntax
+scripts/make-icon.sh         # remakes the app icon (assets/AppIcon.icns) from assets/logo.svg
 ```
 
 While developing you can run the binary directly with files: `.build/debug/Kite file.swift`.
@@ -33,7 +36,7 @@ and the AI tutor will too.
 ## Developer tools (no screen needed)
 
 ```bash
-Kite --render file.swift out.png [--light] [--line N] [--select A:B] [--find text]
+Kite --render file.swift out.png [--light] [--line N] [--select A:B] [--find text [--regex] [--find-in A:B]]
      [--wrap] [--project DIR] [--quick-open QUERY] [--search QUERY] [--cursors A,B,…]
 KITE_SNAPSHOT=out.png Kite folder file   # saves the real window as drawn, then quits
 Kite --bench big-file.swift          # load, parse, typing and scrolling timings
@@ -42,8 +45,9 @@ scripts/budget.sh                    # builds release and checks size, launch, m
 ```
 
 Environment switches: `KITE_NO_SESSION=1` neither restores nor saves the session;
-`KITE_SESSION_DIR=dir` keeps it somewhere else; `KITE_TEST_SCRIPT=edit-and-quit|report|start-return|note-recent`
-drives the running app for end-to-end checks.
+`KITE_SESSION_DIR=dir` keeps it somewhere else; `KITE_TEST_SCRIPT=…` drives the running app for
+end-to-end checks (`edit-and-quit`, `report`, `start-return`, `note-recent`, `find`,
+`project-replace`; see `DevTools.swift` for what each expects).
 
 ## The window
 
@@ -71,10 +75,40 @@ similar are hidden, and the tree updates when files change on disk. Any file you
 folder joins the project.
 
 - **⌘P** quick open: type a few letters of a file name (`edv` → `EditorView.swift`).
-- **⇧⌘F** search the whole project. Results are grouped by file and appear as they're found;
-  click one to open it with the match selected. Binary files and files over 4 MB are skipped.
+- **⇧⌘F** search the whole project, with the same `case word regex` switches as the find bar.
+  Results are grouped by file and appear as they're found; click one to open it with the match
+  selected. Files open in Kite are searched as they are on screen. Binary files and files over
+  4 MB are skipped.
+- **Replace in Files:** type in the replace field and each match shows `- old` / `+ new`. Click a
+  match or a file to skip it, double-click to open it, then press `replace N in M files`. Every
+  file is checked again first; one that changed since the search is left alone. Up to 20 files open
+  as unsaved tabs (one undo step each; ⌥⌘S saves all). More than that, Kite asks once, saves them
+  directly, and Edit ▸ Undo Replace in Files puts them back; files already open in Kite are changed
+  in their tabs and left unsaved.
+
+## Find and replace
+
+⌘F opens the find bar; ⌥⌘F adds the replace row. The switches are words: `case`, `word`, `regex`
+and `selection` (⌥⌘C, ⌥⌘W, ⌥⌘R, ⌥⌘L). The count reads `3 of 12`, or `bad regex`.
+
+- Regex is ICU: `\w`, `\b`, lookarounds, `(?i)`; `^` and `$` match at each line, and a match can span
+  lines. In the replacement, `$1` / `${name}` insert groups and `\n` / `\t` a newline and tab. With
+  regex off, the replacement is used exactly as typed.
+- `selection` keeps find and replace inside the selected block. It turns on by itself when you
+  open find with several lines selected.
+- Return / ⇧Return: next / previous. In the replace field, Return replaces this match and moves on;
+  ⌥Return replaces all (one undo step). ⌥Return in the find field (or ⌃⌘G) puts a cursor on every
+  match (up to 1,000 cursors).
+- Matches are counted in the background, so typing stays fast on big files even with a busy regex.
 
 ## Shortcuts
+
+**Code:** ⌘T go to symbol (the file's functions and types, from the parse tree; no language
+server needed) · ⌃⇧⌘→ / ⌃⇧⌘← expand / shrink the selection by syntax (word, call, statement,
+block…) · the status line shows which function the caret is in.
+
+**Lines** (Edit ▸ Lines, at every cursor): ⇧⌘D duplicate · ⇧⌘K delete · ⌃J join · sort ·
+⌃⇧U / ⌃⇧L upper / lower case · title case.
 
 **Editing:** ⌘/ toggle comment · ⌘] / ⌘[ indent/outdent · ⌥↑ / ⌥↓ move line · ⌘C with nothing
 selected copies the line · ⌘L go to line.
@@ -86,10 +120,19 @@ copying from N cursors and pasting into N cursors gives each its own line.
 
 **Tabs and windows:** ⌘W close tab · ⇧⌘W close window · ⌃Tab / ⌃⇧Tab next/previous tab.
 
-**Find:** ⌘F find · ⌘G / ⇧⌘G next/previous · ⌘E use selection · ⇧⌘F find in project · ⌘P quick open.
+**Find:** ⌘F find · ⌥⌘F find and replace · ⌘G / ⇧⌘G next/previous · ⌃⌘G select all matches ·
+⌘E use selection · ⇧⌘F find in project · ⌘P quick open.
+
+**Files:** ⌥⌘S save all.
 
 **View:** ⌥Z word wrap (wrapped rows keep the line's indentation; off automatically for files over
 200,000 lines) · ⌃⌘S file list · ⌘+ / ⌘- / ⌘0 text size · ⇧⌘B show/hide bots.
 
 The editor outlines the bracket matching the one at the cursor (ignoring brackets inside strings and
 comments) and draws faint indent guides. Standard macOS text keys (⌥←, ⌘←, ⌃K, …) all work.
+
+## License
+
+Kite is free software under the [GNU General Public License v3.0](LICENSE). It bundles
+[tree-sitter](Vendor/tree-sitter/LICENSE) and its grammars for Swift, Python, JavaScript and JSON,
+which are MIT licensed (see `Vendor/*/LICENSE`).

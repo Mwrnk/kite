@@ -23,6 +23,41 @@ enum DevTools {
         return false
     }
 
+    /// Saves the front window, as drawn, to a PNG.
+    @MainActor
+    static func snapshotFrontWindow(to path: String) {
+        guard let view = NSApp.orderedWindows.first?.contentView?.superview ?? NSApp.orderedWindows.first?.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds),
+              let layer = view.layer, let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return }
+        layer.render(in: ctx.cgContext)   // the bitmap context is already at the screen's scale
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+
+    /// Sends a key press through the app, as if typed (so menus and field editors see it).
+    @MainActor
+    static func press(_ keyCode: UInt16, option: Bool, in window: NSWindow?) {
+        guard let window else { return }
+        let chars = keyCode == 36 ? "\r" : ""
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            if let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: option ? [.option] : [],
+                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                            context: nil, characters: chars, charactersIgnoringModifiers: chars,
+                                            isARepeat: false, keyCode: keyCode) {
+                NSApp.sendEvent(event)
+            }
+        }
+    }
+
+    /// Runs `steps` one after another, `gap` seconds apart (each may wait on background work).
+    @MainActor
+    static func run(_ steps: [() -> Void], gap: TimeInterval = 0.3, then done: @escaping () -> Void) {
+        guard let first = steps.first else { done(); return }
+        first()
+        DispatchQueue.main.asyncAfter(deadline: .now() + gap) {
+            MainActor.assumeIsolated { run(Array(steps.dropFirst()), gap: gap, then: done) }
+        }
+    }
+
     /// KITE_TEST_SCRIPT=<name>: drives the running app for end-to-end checks, then quits normally.
     ///   edit-and-quit  types into the front file, moves the cursor, quits (must not ask to save)
     ///   report         prints the windows, tabs, unsaved state and cursors, then quits
@@ -58,6 +93,12 @@ enum DevTools {
                             print("  tab \(p.title) dirty=\(p.document?.isDocumentEdited ?? false) selection=\(s.anchor)-\(s.head) extra=[\(extras)] scrollY=\(y) first=\(p.editor.buffer.lineString(0).debugDescription) active=\(p === c.panes.first { $0.editorView === c.editorView })")
                         }
                     }
+                case "find":
+                    runFindScript()
+                    return
+                case "project-replace":
+                    runProjectReplaceScript()
+                    return
                 case "note-recent":
                     // Adds KITE_TEST_FILE to the recent files and redraws the start window (stays open).
                     if let path = ProcessInfo.processInfo.environment["KITE_TEST_FILE"] {
@@ -86,6 +127,228 @@ enum DevTools {
                 }
                 NSApp.terminate(nil)
             }
+        }
+    }
+
+    /// KITE_TEST_SCRIPT=find: drives the find bar in the front window. Expects a file with
+    /// "foo fooo bar\nfoo baz\nlast foo\n" open. Prints PASS/FAIL lines, then quits.
+    @MainActor
+    private static func runFindScript() {
+        guard let c = EditorWindowController.all.first else { print("FAIL no window"); NSApp.terminate(nil); return }
+        let bar = c.findBar
+        let editor = c.editorView.editor
+        var failures = 0
+        func check(_ ok: Bool, _ what: String) {
+            print("\(ok ? "PASS" : "FAIL") \(what)")
+            if !ok { failures += 1 }
+        }
+        let original = editor.text
+        func selected() -> String { editor.selectedText }
+        DevTools.run([
+            { editor.setSelection(Selection(caret: 0)); bar.show(replacing: true); bar.type("foo") },
+            {
+                check(bar.countText == "1 of 4", "typing finds and selects the first match (\(bar.countText))")
+                check(selected() == "foo", "first match selected")
+                bar.findNext(nil)
+            },
+            {
+                check(editor.selection.range == 4..<7, "⌘G goes to the next match")
+                check(bar.countText == "2 of 4", "count follows (\(bar.countText))")
+                bar.toggleWord(nil)
+            },
+            {
+                check(bar.countText.hasSuffix("3 matches"), "whole word skips fooo (\(bar.countText))")
+                bar.toggleWord(nil)
+                bar.toggleRegex(nil)
+                bar.type("f(o+)")
+            },
+            {
+                editor.setSelection(Selection(anchor: 4, head: 8))   // "fooo"
+                bar.replaceField.stringValue = "<$1>"
+                bar.replaceCurrent(nil)
+            },
+            {
+                check(editor.text.hasPrefix("foo <ooo> bar"), "replace uses $1 on the current match")
+                check(editor.selection.range == 14..<17, "replace goes on to the next match (\(editor.selection.range))")
+                bar.replaceAll(nil)
+            },
+            {
+                check(editor.text == "<oo> <ooo> bar\n<oo> baz\nlast <oo>\n", "replace all (\(editor.text.debugDescription))")
+                editor.undo()
+                editor.undo()
+                check(editor.text == original, "two undos get back the original")
+                bar.type("^")
+                bar.replaceField.stringValue = "// "
+            },
+            { bar.replaceAll(nil) },
+            {
+                check(editor.text == "// foo fooo bar\n// foo baz\n// last foo\n", "^ prefixes every line, not the end of the file (\(editor.text.debugDescription))")
+                editor.undo()
+                // Find in selection: lines 2 and 3 only.
+                editor.setSelection(Selection(anchor: 13, head: original.utf8.count - 1))
+                bar.type("foo")
+                bar.toggleSelection(nil)
+                bar.replaceField.stringValue = "X"
+                bar.toggleRegex(nil)
+            },
+            { bar.replaceAll(nil) },
+            {
+                check(editor.text == "foo fooo bar\nX baz\nlast X\n", "replace all stays in the selection (\(editor.text.debugDescription))")
+                editor.undo()
+                bar.toggleSelection(nil)
+                editor.setSelection(Selection(caret: 0))
+                bar.selectAllMatches(nil)
+            },
+            {
+                check(editor.allSelections.count == 4, "select all matches makes 4 cursors (\(editor.allSelections.count))")
+                editor.setSelection(Selection(caret: 0))
+                bar.toggleRegex(nil)
+                bar.type("(")
+            },
+            {
+                check(bar.countText == "bad regex", "a broken regex shows in the count (\(bar.countText))")
+                bar.type("ba")
+            },
+            {
+                check(bar.countText.contains("2"), "two matches of ba (\(bar.countText))")
+                let state = c.editorView.findState!
+                let before = state.matches
+                editor.setSelection(Selection(caret: 0))
+                editor.insertText("ba ")   // typing in the code while find is open
+                check(state.matches == before.map { ($0.lowerBound + 3)..<($0.upperBound + 3) }, "matches move with an edit before them")
+                let hit = state.matches[0]
+                editor.setSelection(Selection(caret: hit.lowerBound + 1))
+                editor.insertText("Q")
+                check(!state.matches.contains { $0.lowerBound == hit.lowerBound } && state.matches.count == before.count - 1,
+                      "an edit inside a match drops it until the recount")
+                editor.undo()
+            },
+            {
+                check(bar.countText.contains("3"), "count follows edits (\(bar.countText))")
+                bar.toggleRegex(nil)
+                bar.type("foo")
+                editor.setSelection(Selection(caret: 0))
+                bar.findNext(nil)
+            },
+            {
+                // Real keys: ⌥Return in the find field puts a cursor on every match.
+                editor.setSelection(Selection(caret: 0))
+                c.window?.makeFirstResponder(bar.findField)
+                DevTools.press(36, option: true, in: c.window)
+            },
+            {
+                check(editor.allSelections.count == 4, "⌥Return in find makes a cursor per match (\(editor.allSelections.count))")
+                editor.setSelection(Selection(caret: 0))
+                bar.findNext(nil)
+            },
+            {
+                c.window?.makeFirstResponder(bar.replaceField)
+                bar.replaceField.stringValue = "Z"
+                DevTools.press(36, option: false, in: c.window)
+            },
+            {
+                check(editor.text.hasPrefix("ba Z fooo"), "Return in replace replaces this match (\(editor.text.prefix(12).debugDescription))")
+                DevTools.press(36, option: true, in: c.window)
+            },
+            {
+                check(!editor.text.contains("foo"), "⌥Return in replace replaces all (\(editor.text.debugDescription))")
+                if let path = ProcessInfo.processInfo.environment["KITE_SNAPSHOT"] { DevTools.snapshotFrontWindow(to: path) }
+            },
+        ], gap: 0.4) {
+            print(failures == 0 ? "ALL PASS" : "\(failures) FAILED")
+            for doc in NSDocumentController.shared.documents { doc.updateChangeCount(.changeCleared) }
+            NSApp.terminate(nil)
+        }
+    }
+
+    /// KITE_TEST_SCRIPT=project-replace: expects Kite opened on the folder made by the test
+    /// (a.swift, b.swift with CRLF, c.txt, open.swift open with an unsaved edit, many/ with 25 files).
+    @MainActor
+    private static func runProjectReplaceScript() {
+        guard let c = EditorWindowController.all.first(where: { $0.projectSidebar != nil }), let sidebar = c.projectSidebar,
+              let root = c.project?.root else { print("FAIL no project window"); NSApp.terminate(nil); return }
+        var failures = 0
+        func check(_ ok: Bool, _ what: String) {
+            print("\(ok ? "PASS" : "FAIL") \(what)")
+            if !ok { failures += 1 }
+        }
+        func disk(_ name: String) -> String { (try? String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)) ?? "?" }
+        func doc(_ name: String) -> TextDocument? {
+            NSDocumentController.shared.documents.compactMap { $0 as? TextDocument }.first { $0.fileURL?.lastPathComponent == name }
+        }
+        sidebar.showSearch()
+        let search = sidebar.search
+        // An unsaved edit in the open file: project search should see it.
+        if let open = doc("open.swift") { open.editor.setSelection(Selection(caret: 0)); open.editor.insertText("fetchUser()\n") }
+        let originalC = disk("c.txt")
+        DevTools.run([
+            { search.testSearch("fetchUser", replace: "loadUser") },
+            {
+                let files = search.testFiles.sorted { $0.name < $1.name }.map { "\($0.name):\($0.count)" }.joined(separator: " ")
+                check(files == "a.swift:2 b.swift:1 c.txt:1 open.swift:1", "search finds every file, unsaved text too (\(files))")
+                search.testSkip(file: "c.txt")
+                check(search.testButton == "replace 4 in 3 files", "skipping a file updates the button (\(search.testButton))")
+                search.testReplace()
+            },
+            {
+                check(search.testStatus.hasPrefix("Replaced 4 in 3 files"), "report (\(search.testStatus))")
+                check(c.panes.contains { $0.document?.fileURL?.lastPathComponent == "a.swift" }, "a.swift opened as a tab")
+                check(doc("a.swift")?.isDocumentEdited == true && disk("a.swift").contains("fetchUser"), "a.swift is changed in memory, not on disk yet")
+                check(doc("a.swift")?.editor.text == "loadUser(id)\nlet x = loadUser(me)\n", "a.swift text")
+                check(doc("open.swift")?.editor.text.hasPrefix("loadUser()\n") == true, "the open file was changed in its tab")
+                check(disk("c.txt") == originalC, "skipped file untouched")
+                doc("a.swift")?.editor.undo()
+                check(doc("a.swift")?.editor.text == "fetchUser(id)\nlet x = fetchUser(me)\n", "one undo step per file")
+                doc("a.swift")?.editor.redo()
+                c.saveAllFiles(nil)
+            },
+            {
+                check(disk("a.swift") == "loadUser(id)\nlet x = loadUser(me)\n", "Save All wrote a.swift")
+                let b = (try? Data(contentsOf: root.appendingPathComponent("b.swift"))) ?? Data()
+                check(b == Data("x = loadUser()\r\ny = 2\r\n".utf8), "b.swift keeps CRLF")
+                // A file changed on disk after the search is left alone.
+                search.testSearch("keep", replace: "KEEP")
+            },
+            {
+                try? "keep it changed\n".write(to: root.appendingPathComponent("c.txt"), atomically: true, encoding: .utf8)
+                search.testReplace()
+            },
+            {
+                check(search.testStatus.contains("changed since the search"), "changed file reported (\(search.testStatus))")
+                check(disk("c.txt") == "keep it changed\n", "changed file left alone")
+                // Over 20 files: saved straight to disk (the confirm sheet is skipped here).
+                search.testSearch("needle", replace: "pin")
+            },
+            {
+                check(search.testButton == "replace 25 in 25 files", "25 files found (\(search.testButton))")
+                let plans = (0..<25).map { i in
+                    ProjectReplace.FilePlan(url: root.appendingPathComponent("many/f\(i).txt"), previewed: [4], skip: [])
+                }
+                let query = try! FindQuery("needle")
+                ProjectReplace.run(plans, query: query, template: "pin", saving: true, in: c) { search.refresh(notice: $0) }
+            },
+            {
+                check(disk("many/f7.txt") == "one pin two\n", "saved straight to disk")
+                check(ProjectReplace.lastSaved.count == 25, "originals kept for undo")
+                check(!c.panes.contains { $0.document?.fileURL?.path.contains("/many/") == true }, "no tabs for a big replace")
+                c.undoReplaceInFiles(nil)
+            },
+            {
+                check(disk("many/f7.txt") == "one needle two\n", "Undo Replace in Files put them back")
+                check(search.testStatus.hasPrefix("Put back 25 files"), "undo report (\(search.testStatus))")
+                if let path = ProcessInfo.processInfo.environment["KITE_SNAPSHOT"] {
+                    search.testSearch("loadUser", replace: "getUser")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        MainActor.assumeIsolated { DevTools.snapshotFrontWindow(to: path) }
+                    }
+                }
+            },
+            {},
+            {},
+        ], gap: 0.5) {
+            print(failures == 0 ? "ALL PASS" : "\(failures) FAILED")
+            for d in NSDocumentController.shared.documents { d.updateChangeCount(.changeCleared) }
+            NSApp.terminate(nil)
         }
     }
 
@@ -132,7 +395,17 @@ enum DevTools {
         if let line = value(args, "--line").flatMap(Int.init) {
             view.scroll(NSPoint(x: 0, y: view.lineTop(max(line - 1, 0))))
         }
-        if let query = value(args, "--find") { view.findQuery = query }
+        if let pattern = value(args, "--find") {
+            // --regex and --find-in A:B work with it; matches are counted right here.
+            let query = try? FindQuery(pattern, options: FindOptions(regex: args.contains("--regex")))
+            let state = view.findState ?? FindState(buffer: editor.buffer)
+            view.findState = state
+            if let s = value(args, "--find-in")?.split(separator: ":").compactMap({ Int($0) }), s.count == 2 {
+                state.scope = s[0]..<s[1]
+            }
+            state.show(query?.matches(in: editor.text, within: state.scope) ?? [])
+            view.showsFind = true
+        }
 
         var content = window.contentView!
         if let query = value(args, "--search") {
@@ -353,5 +626,46 @@ enum DevTools {
                 content.cacheDisplay(in: view.visibleRect, to: rep)
             }
         }
+
+        // The same typing with find open on a busy regex: matches move with each edit and are
+        // counted again in the background.
+        view.scroll(NSPoint(x: 0, y: view.lineTop(middle)))
+        let find = controller.findBar
+        let state = view.findState!
+        time("count matches of \\w+\\( (background)") {
+            find.show(replacing: false)
+            find.toggleRegex(nil)
+            find.type("\\w+\\(")
+            let deadline = Date().addingTimeInterval(20)
+            while !state.isFresh && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.001)) }
+        }
+        print("  \(state.matches.count)\(state.capped ? "+" : "") matches")
+        editor.setSelection(Selection(caret: editor.buffer.lineStarts[middle]))
+        content.cacheDisplay(in: view.visibleRect, to: rep)
+        worst = .zero
+        time("type \(keys) chars, find open (+ redraw)") {
+            for i in 0..<keys {
+                let t0 = ContinuousClock.now
+                if i % 40 == 39 { editor.insertNewline() } else { editor.insertText("x") }
+                content.cacheDisplay(in: view.visibleRect, to: rep)
+                let d = ContinuousClock.now - t0
+                worst = max(worst, d)
+                if ProcessInfo.processInfo.environment["KITE_BENCH_DEBUG"] != nil, d > .milliseconds(4) { print("  slow key \(i): \(d)") }
+                if i % 20 == 0 { RunLoop.main.run(until: Date().addingTimeInterval(0.2)) }   // let counts land between bursts
+            }
+        }
+        let worstFindMs = Double(worst.components.attoseconds) / 1e15 + Double(worst.components.seconds) * 1000
+        print(String(format: "  worst keystroke, find open: %.2f ms", worstFindMs))
+
+        // Replace every match, undo it, then put a cursor on every match and type.
+        let query = try! FindQuery("\\w+\\(", options: FindOptions(regex: true))
+        let edits = query.replacements(in: editor.text, template: "f(")
+        time("replace all \(edits.count) (one undo step)") { editor.replace(edits) }
+        time("undo it") { editor.undo() }
+        let all = query.matches(in: editor.text, includeEmpty: false).prefix(FindBar.maxCursors)
+            .map { Selection(anchor: $0.lowerBound, head: $0.upperBound) }
+        time("cursor on all \(all.count) matches") { editor.setSelections(main: all[0], others: all) }
+        time("type one char at every cursor") { editor.insertText("x") }
+        time("undo it") { editor.undo() }
     }
 }

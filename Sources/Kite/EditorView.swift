@@ -79,8 +79,10 @@ final class EditorView: NSView, @preconcurrency NSTextInputClient, NSMenuItemVal
     private var blinkTimer: Timer?
 
     /// Text to highlight everywhere it appears (set by the find bar).
-    var findQuery = "" { didSet { needsDisplay = true } }
-    var findCaseSensitive = false { didSet { needsDisplay = true } }
+    /// Matches to highlight, kept by the tab's find bar.
+    var findState: FindState?
+    /// True while the find bar is open, so matches and the selection block are drawn.
+    var showsFind = false { didSet { needsDisplay = true } }
 
     init(editor: TextEditor) {
         self.editor = editor
@@ -431,12 +433,19 @@ final class EditorView: NSView, @preconcurrency NSTextInputClient, NSMenuItemVal
             }
         }
 
-        // Find matches.
-        if !findQuery.isEmpty {
+        // Find: the block searched in, then the matches.
+        if showsFind, let find = findState {
             let visible = buffer.lineStarts[first]..<buffer.lineRange(last).upperBound
+            if let scope = find.scope {
+                ctx.setFillColor(theme.inactiveSelection)
+                fillRange(scope.clamped(to: visible), in: ctx, lines: first...last)
+            }
             ctx.setFillColor(theme.findMatch)
-            for match in editor.matches(of: findQuery, in: visible, caseSensitive: findCaseSensitive) {
-                fillRange(match, in: ctx, lines: first...last)
+            let matches = find.matches
+            var i = FindQuery.firstIndex(in: matches) { $0.upperBound > visible.lowerBound }
+            while i < matches.count, matches[i].lowerBound < visible.upperBound {
+                if !matches[i].isEmpty { fillRange(matches[i], in: ctx, lines: first...last) }
+                i += 1
             }
         }
 
@@ -800,6 +809,36 @@ final class EditorView: NSView, @preconcurrency NSTextInputClient, NSMenuItemVal
 
     override func selectAll(_ sender: Any?) { editor.selectAll() }
     @objc func toggleComment(_ sender: Any?) { editor.toggleComment() }
+    @objc func duplicateLines(_ sender: Any?) { editor.duplicateLines() }
+    @objc func deleteLines(_ sender: Any?) { editor.deleteLines() }
+    @objc func joinLines(_ sender: Any?) { editor.joinLines() }
+    @objc func sortLines(_ sender: Any?) { if !editor.sortLines() { NSSound.beep() } }
+    @objc func uppercase(_ sender: Any?) { editor.changeCase(.upper) }
+    @objc func lowercase(_ sender: Any?) { editor.changeCase(.lower) }
+    @objc func titleCase(_ sender: Any?) { editor.changeCase(.title) }
+
+    // MARK: Selecting by syntax
+
+    /// Each expand step: the selection before it and the one it made, so shrink can walk back.
+    private var expandSteps: [(before: Selection, after: Selection)] = []
+
+    /// Grows the selection to the next syntax node around it: a word, its call, the statement,
+    /// the block, the function (⌃⇧⌘→).
+    @objc func expandSelection(_ sender: Any?) {
+        guard let syntax, let next = syntax.enclosingRanges(of: editor.selection.range).first else { NSSound.beep(); return }
+        if expandSteps.last?.after != editor.selection { expandSteps = [] }   // the selection moved since
+        let before = editor.selection
+        let after = Selection(anchor: next.lowerBound, head: next.upperBound)
+        editor.setSelection(after)
+        expandSteps.append((before, after))
+    }
+
+    /// Goes back one expand step (⌃⇧⌘←).
+    @objc func shrinkSelection(_ sender: Any?) {
+        guard let step = expandSteps.last, step.after == editor.selection else { expandSteps = []; NSSound.beep(); return }
+        expandSteps.removeLast()
+        editor.setSelection(step.before)
+    }
     @objc func indentLines(_ sender: Any?) { editor.indentLines() }
     @objc func outdentLines(_ sender: Any?) { editor.outdentLines() }
     @objc func moveLineUp(_ sender: Any?) { editor.moveLines(by: -1) }

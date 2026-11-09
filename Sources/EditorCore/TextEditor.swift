@@ -149,15 +149,34 @@ public final class TextEditor {
         onChange?(true)
     }
 
+    /// Many edits (Replace All) become one edit over the span they cover: each buffer change costs
+    /// about the same whatever its size, so 60,000 small ones would take seconds.
+    private func merged(_ replacements: [(Range<Int>, String)]) -> [(Range<Int>, [UInt8])] {
+        guard replacements.count > 32 else { return replacements.map { ($0.0, Array($0.1.utf8)) } }
+        let sorted = replacements.sorted { $0.0.lowerBound < $1.0.lowerBound }
+        let lo = sorted[0].0.lowerBound
+        let hi = sorted.map(\.0.upperBound).max()!
+        let old = buffer.bytes(in: lo..<hi)
+        var new: [UInt8] = []
+        new.reserveCapacity(old.count)
+        var at = lo
+        for (range, text) in sorted {
+            new.append(contentsOf: old[(at - lo)..<(range.lowerBound - lo)])
+            new.append(contentsOf: text.utf8)
+            at = range.upperBound
+        }
+        new.append(contentsOf: old[(at - lo)...])
+        return [(lo..<hi, new)]
+    }
+
     /// Applies replacements given in current-document offsets as one undo step.
     /// Edits must not overlap; they are applied back to front so offsets stay valid.
     private func transact(_ kind: StepKind, _ replacements: [(Range<Int>, String)], selectAfter: Selection,
                           extrasAfter: [Selection]? = nil) {
         let before = selection, extrasBefore = extraSelections
         var records: [EditRecord] = []
-        for (range, text) in replacements.sorted(by: { $0.0.lowerBound > $1.0.lowerBound }) {
+        for (range, new) in merged(replacements).sorted(by: { $0.0.lowerBound > $1.0.lowerBound }) {
             let old = buffer.bytes(in: range)
-            let new = Array(text.utf8)
             if old == new { continue }
             buffer.replace(range, withBytes: new)
             records.append(EditRecord(start: range.lowerBound, oldBytes: old, newBytes: new))
@@ -202,6 +221,10 @@ public final class TextEditor {
     // MARK: Selection
 
     private var goalColumn: Int?
+
+    private func clamp(_ r: Range<Int>) -> Range<Int> {
+        min(max(r.lowerBound, 0), buffer.byteCount)..<min(max(r.upperBound, 0), buffer.byteCount)
+    }
 
     private func clamp(_ s: Selection) -> Selection {
         Selection(anchor: min(max(s.anchor, 0), buffer.byteCount), head: min(max(s.head, 0), buffer.byteCount))
@@ -250,18 +273,22 @@ public final class TextEditor {
     }
 
     public func selectWord(at offset: Int) {
+        let r = wordRange(at: offset)
+        setSelection(Selection(anchor: r.lowerBound, head: r.upperBound))
+    }
+
+    /// The word (or run of punctuation, or of spaces) at an offset.
+    private func wordRange(at offset: Int) -> Range<Int> {
         let line = buffer.line(containing: offset)
         let range = buffer.lineRange(line)
         let chars = characters(inLine: line)
         let col = offset - range.lowerBound
-        guard let index = chars.firstIndex(where: { $0.end > col }) ?? chars.indices.last else {
-            setSelection(Selection(caret: offset)); return
-        }
+        guard let index = chars.firstIndex(where: { $0.end > col }) ?? chars.indices.last else { return offset..<offset }
         let kind = Self.kind(of: chars[index].char)
         var lo = index, hi = index
         while lo > 0, Self.kind(of: chars[lo - 1].char) == kind { lo -= 1 }
         while hi + 1 < chars.count, Self.kind(of: chars[hi + 1].char) == kind { hi += 1 }
-        setSelection(Selection(anchor: range.lowerBound + chars[lo].start, head: range.lowerBound + chars[hi].end))
+        return (range.lowerBound + chars[lo].start)..<(range.lowerBound + chars[hi].end)
     }
 
     public func selectLine(at offset: Int) {
@@ -332,6 +359,17 @@ public final class TextEditor {
         }
         selection = merged.first(where: \.isPrimary)?.0 ?? merged.last!.0
         extraSelections = merged.filter { !$0.isPrimary }.map(\.0)
+    }
+
+    /// Replaces every cursor at once; `main` becomes the main one (find ▸ select all matches).
+    public func setSelections(main: Selection, others: [Selection]) {
+        commitMarkedText()
+        selection = clamp(main)
+        extraSelections = others.map(clamp)
+        mergeOverlappingSelections()
+        goalColumn = nil
+        canCoalesce = false
+        onChange?(false)
     }
 
     /// Adds a cursor or selection (⌥-click). It becomes the main one. ⌥-clicking an existing cursor removes it.
@@ -557,6 +595,30 @@ public final class TextEditor {
             }
         }
         transact(.typing, [(range, text)], selectAfter: Selection(caret: range.lowerBound + text.utf8.count))
+    }
+
+    /// Replaces several ranges as one undo step (Replace All). Ranges must not overlap. Cursors stay
+    /// where they were in the text around the edits; one inside a replaced range moves to its end.
+    public func replace(_ edits: [(range: Range<Int>, text: String)]) {
+        commitMarkedText()
+        guard !edits.isEmpty else { return }
+        let sorted = edits.map { (clamp($0.range), $0.text) }.sorted { $0.0.lowerBound < $1.0.lowerBound }
+        func moved(_ offset: Int) -> Int {
+            var shift = 0
+            for (range, text) in sorted {
+                if range.upperBound <= offset && !(range.isEmpty && range.lowerBound == offset) {
+                    shift += text.utf8.count - range.count
+                } else if range.lowerBound < offset {
+                    return range.lowerBound + shift + text.utf8.count   // inside a replaced range
+                } else {
+                    break
+                }
+            }
+            return offset + shift
+        }
+        func moved(_ s: Selection) -> Selection { Selection(anchor: moved(s.anchor), head: moved(s.head)) }
+        let after = moved(selection), extrasAfter = extraSelections.map(moved)
+        transact(.other, sorted, selectAfter: after, extrasAfter: extrasAfter)
     }
 
     /// Replaces the selection as its own undo step, without auto-closing (used for paste).
@@ -793,6 +855,147 @@ public final class TextEditor {
         func shifted(_ s: Selection) -> Selection { Selection(anchor: shift(s.anchor), head: shift(s.head)) }
         transact(.other, replacements, selectAfter: shifted(selection),
                  extrasAfter: batch == nil ? extraSelections.map(shifted) : nil)
+    }
+
+    // MARK: Line tools
+
+    /// The lines under each cursor, in order; blocks that overlap are merged.
+    private var lineGroups: [ClosedRange<Int>] {
+        var groups: [ClosedRange<Int>] = []
+        for s in allSelections {
+            let r = lines(of: s)
+            if let last = groups.last, r.lowerBound <= last.upperBound {
+                groups[groups.count - 1] = last.lowerBound...max(last.upperBound, r.upperBound)
+            } else {
+                groups.append(r)
+            }
+        }
+        return groups
+    }
+
+    private func text(ofLines lines: ClosedRange<Int>) -> String {
+        buffer.string(in: buffer.lineStarts[lines.lowerBound]..<buffer.lineRange(lines.upperBound).upperBound)
+    }
+
+    /// Where an offset lands after edits (sorted, non-overlapping); one inside a replaced range
+    /// goes to that range's start.
+    private func position(_ offset: Int, after edits: [(Range<Int>, String)]) -> Int {
+        var shift = 0
+        for (range, text) in edits {
+            if range.upperBound <= offset && !(range.isEmpty && range.lowerBound == offset) {
+                shift += text.utf8.count - range.count
+            } else if range.lowerBound < offset {
+                return range.lowerBound + shift
+            } else {
+                break
+            }
+        }
+        return offset + shift
+    }
+
+    /// Copies the lines under each cursor below themselves; the cursors move onto the copies (⇧⌘D).
+    public func duplicateLines() {
+        commitMarkedText()
+        let groups = lineGroups
+        var edits: [(Range<Int>, String)] = []
+        var added: [(line: Int, bytes: Int)] = []   // a group's last line, and what's inserted after it
+        for g in groups {
+            let end = buffer.lineRange(g.upperBound).upperBound
+            let copy = "\n" + text(ofLines: g)
+            edits.append((end..<end, copy))
+            added.append((g.upperBound, copy.utf8.count))
+        }
+        // Each selection moves down by its own block's copy, plus every copy inserted above it.
+        func moved(_ s: Selection) -> Selection {
+            let line = buffer.line(containing: s.range.lowerBound)
+            let shift = zip(groups, added).filter { $0.0.lowerBound <= line }.reduce(0) { $0 + $1.1.bytes }
+            return Selection(anchor: s.anchor + shift, head: s.head + shift)
+        }
+        transact(.other, edits, selectAfter: moved(selection), extrasAfter: extraSelections.map(moved))
+    }
+
+    /// Deletes the lines under each cursor (⇧⌘K). Cursors go to the start of the line that moves up.
+    public func deleteLines() {
+        commitMarkedText()
+        let edits = lineGroups.map { (lineBlock($0.lowerBound, $0.upperBound), "") }
+        func moved(_ s: Selection) -> Selection {
+            let at = position(s.head, after: edits)
+            let start = min(at, buffer.byteCount - edits.reduce(0) { $0 + $1.0.count })
+            return Selection(caret: start)
+        }
+        let after = moved(selection)
+        transact(.other, edits, selectAfter: after, extrasAfter: extraSelections.map(moved))
+        // Cursors that land on the same spot become one.
+        if hasMultipleCursors { setSelections(main: selection, others: extraSelections) }
+    }
+
+    /// Joins each cursor's line with the next one, or the selected lines into one (⌃J). The
+    /// next line's indentation becomes a single space.
+    public func joinLines() {
+        commitMarkedText()
+        var edits: [(Range<Int>, String)] = []
+        for g in lineGroups {
+            let last = g.lowerBound == g.upperBound ? g.lowerBound + 1 : g.upperBound
+            guard last < buffer.lineCount else { continue }
+            for line in (g.lowerBound + 1)...last {
+                let newline = buffer.lineStarts[line] - 1
+                let textStart = leadingWhitespaceEnd(line)
+                let joinedEmpty = textStart == buffer.lineRange(line).upperBound
+                let before = newline > buffer.lineStarts[line - 1] ? buffer.byte(at: newline - 1) : 0x20
+                let space = joinedEmpty || before == 0x20 || before == 0x09 ? "" : " "
+                edits.append((newline..<textStart, space))
+            }
+        }
+        guard !edits.isEmpty else { return }
+        func moved(_ s: Selection) -> Selection { Selection(anchor: position(s.anchor, after: edits), head: position(s.head, after: edits)) }
+        transact(.other, edits, selectAfter: moved(selection), extrasAfter: extraSelections.map(moved))
+    }
+
+    /// Sorts the selected lines (natural order: "file2" before "file10"). Needs a selection over
+    /// two or more lines; returns false otherwise.
+    @discardableResult
+    public func sortLines(descending: Bool = false) -> Bool {
+        commitMarkedText()
+        let groups = lineGroups.filter { $0.count > 1 }
+        guard !groups.isEmpty else { return false }
+        var edits: [(Range<Int>, String)] = []
+        for g in groups {
+            let lines = g.map { buffer.lineString($0) }
+            var sorted = lines.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            if descending { sorted.reverse() }
+            edits.append((buffer.lineStarts[g.lowerBound]..<buffer.lineRange(g.upperBound).upperBound, sorted.joined(separator: "\n")))
+        }
+        let main = groups.first { $0.contains(buffer.line(containing: selection.head)) } ?? groups[0]
+        let block = buffer.lineStarts[main.lowerBound]..<buffer.lineRange(main.upperBound).upperBound
+        transact(.other, edits, selectAfter: Selection(anchor: block.lowerBound, head: block.upperBound), extrasAfter: [])
+        return true
+    }
+
+    public enum Case { case upper, lower, title }
+
+    /// Changes the case of each selection, or of the word at each cursor.
+    public func changeCase(_ kind: Case) {
+        commitMarkedText()
+        var edits: [(Range<Int>, String)] = []
+        var results: [(Selection, isMain: Bool)] = []
+        for s in allSelections {
+            let r = s.isEmpty ? wordRange(at: s.head) : s.range
+            guard !r.isEmpty else { continue }
+            let old = buffer.string(in: r)
+            let new = switch kind { case .upper: old.uppercased(); case .lower: old.lowercased(); case .title: old.capitalized }
+            edits.append((r, new))
+            results.append((Selection(anchor: r.lowerBound, head: r.lowerBound + new.utf8.count), s == selection))
+        }
+        guard !edits.isEmpty else { return }
+        // Selections keep their places: a case change can alter byte lengths (ß → SS), so shift them.
+        var shift = 0
+        var placed: [(Selection, Bool)] = []
+        for (i, (sel, isMain)) in results.enumerated() {
+            placed.append((Selection(anchor: sel.anchor + shift, head: sel.head + shift), isMain))
+            shift += edits[i].1.utf8.count - edits[i].0.count
+        }
+        let main = placed.first { $0.1 }?.0 ?? placed[0].0
+        transact(.other, edits, selectAfter: main, extrasAfter: placed.filter { !$0.1 }.map(\.0))
     }
 
     /// Moves the selected lines up (-1) or down (+1).

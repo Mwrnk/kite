@@ -19,6 +19,8 @@ final class EditorPane {
     var backupName: String?
     /// Where to scroll once the pane is first on screen (after a session restore).
     var pendingScrollY: CGFloat?
+    /// Find results for this tab.
+    let find: FindState
     /// Called after text or selection changes, once the pane has done its own bookkeeping.
     var onChange: ((_ textChanged: Bool) -> Void)?
 
@@ -27,6 +29,8 @@ final class EditorPane {
     init(editor: TextEditor, document: TextDocument?, language: Language?) {
         self.document = document
         editorView = EditorView(editor: editor)
+        find = FindState(buffer: editor.buffer)
+        editorView.findState = find
         gutter = LineNumberGutter(editorView: editorView)
 
         scrollView.documentView = editorView
@@ -79,6 +83,7 @@ final class EditorPane {
             }
         }
 
+        find.onChange = { [weak self] in self?.editorView.needsDisplay = true }
         setLanguage(language)
         editorView.onChange = { [weak self] textChanged in self?.editorDidChange(textChanged: textChanged) }
         lastLineCount = editor.buffer.lineCount

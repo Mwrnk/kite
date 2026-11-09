@@ -11,11 +11,11 @@ import Foundation
 @MainActor
 public final class SyntaxTree {
     public let language: Language
-    private let buffer: TextBuffer
+    let buffer: TextBuffer
     private let worker: ParseWorker
     /// Compiled in the background when the tree is made; no colors until it's ready.
     private var query: HighlightQuery?
-    private var tree: TreeBox?
+    var tree: TreeBox?
 
     private var dirty = true
     private var parsing = false

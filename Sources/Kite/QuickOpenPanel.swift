@@ -1,7 +1,16 @@
 import AppKit
 import EditorCore
 
+/// One row of a list picker: a name to type for, and a note on the right (a kind, a shortcut).
+struct PickerItem {
+    let title: String
+    let detail: String
+    /// Leading spaces, for nesting (methods under their type).
+    var indent = 0
+}
+
 /// ⌘P: type a few letters of a file name to jump to it. Fuzzy, so "edv" finds EditorView.swift.
+/// The same panel lists other things too: symbols (⇧⌘O) and commands (⇧⌘P).
 @MainActor
 final class QuickOpenPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     private static var current: QuickOpenPanel?
@@ -16,14 +25,27 @@ final class QuickOpenPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate,
     private var candidates: [FuzzyCandidate] = []
     private var results: [(index: Int, result: FuzzyMatch.Result)] = []
     private let onPick: (URL) -> Void
+    /// A list of things instead of files (symbols, commands), and what picking one does.
+    private var items: [PickerItem]?
+    private var onPickItem: ((Int) -> Void)?
 
     private static let rowHeight: CGFloat = 34
     private static let maxRows = 10
 
     /// Shows the panel over `window`, listing the project's files (or recent files without a project).
     static func show(over window: NSWindow, project: Project?, onPick: @escaping (URL) -> Void) {
+        present(QuickOpenPanel(project: project, onPick: onPick), over: window)
+    }
+
+    /// Shows a list to pick from (symbols, commands). `onPick` gets the index of the item picked.
+    static func show(over window: NSWindow, items: [PickerItem], placeholder: String, onPick: @escaping (Int) -> Void) {
+        let panel = QuickOpenPanel(project: nil, onPick: { _ in }, items: items, placeholder: placeholder)
+        panel.onPickItem = onPick
+        present(panel, over: window)
+    }
+
+    private static func present(_ panel: QuickOpenPanel, over window: NSWindow) {
         current?.dismiss()
-        let panel = QuickOpenPanel(project: project, onPick: onPick)
         current = panel
         let width: CGFloat = min(600, window.frame.width - 40)
         let frame = window.frame
@@ -34,9 +56,10 @@ final class QuickOpenPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate,
         panel.refresh()
     }
 
-    private init(project: Project?, onPick: @escaping (URL) -> Void) {
+    private init(project: Project?, onPick: @escaping (URL) -> Void, items: [PickerItem]? = nil, placeholder: String? = nil) {
         self.project = project
         self.onPick = onPick
+        self.items = items
         super.init(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: true)
         isFloatingPanel = true
         hasShadow = true
@@ -54,7 +77,7 @@ final class QuickOpenPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate,
         field.font = inputFont
         field.textColor = Chrome.text
         field.placeholderAttributedString = NSAttributedString(
-            string: project.map { "file in \($0.name)" } ?? "recent file",
+            string: placeholder ?? project.map { "file in \($0.name)" } ?? "recent file",
             attributes: [.font: inputFont, .foregroundColor: Chrome.faint])
         field.delegate = self
         field.cell?.usesSingleLineMode = true
@@ -90,7 +113,7 @@ final class QuickOpenPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate,
             line.fill = Chrome.raisedLine
             line.heightAnchor.constraint(equalToConstant: 1).isActive = true
         }
-        let hints = Chrome.label("↵ open      esc close", color: Chrome.faint)
+        let hints = Chrome.label(items == nil ? "↵ open      esc close" : "↵ go      esc close", color: Chrome.faint)
         let stack = NSStackView(views: [inputRow, topLine, scroll, emptyLabel, bottomLine, hints])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -145,7 +168,9 @@ final class QuickOpenPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate,
     // MARK: Candidates and results
 
     private func loadCandidates() {
-        if let project {
+        if let items {
+            candidates = items.map { FuzzyCandidate($0.title) }
+        } else if let project {
             urls = project.files
             candidates = urls.map { FuzzyCandidate(project.relativePath($0)) }
         } else {
@@ -156,7 +181,14 @@ final class QuickOpenPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate,
 
     private func refresh() {
         let query = field.stringValue
-        if query.isEmpty {
+        if items != nil {
+            if query.isEmpty {
+                let none = FuzzyMatch.Result(score: 0, positions: [])
+                results = candidates.indices.map { (index: $0, result: none) }
+            } else {
+                results = FuzzyMatch.rank(query, candidates, limit: 1000)
+            }
+        } else if query.isEmpty {
             // Recently opened files first, then everything in path order.
             let recent = Set(NSDocumentController.shared.recentDocumentURLs.map(\.standardizedFileURL))
             let order = candidates.indices.sorted {
@@ -171,7 +203,13 @@ final class QuickOpenPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate,
         if !results.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false); table.scrollRowToVisible(0) }
 
         let indexing = project.map { !$0.isIndexed } ?? false
-        emptyLabel.stringValue = indexing ? "Listing files…" : results.isEmpty ? "No matching files" : ""
+        var empty = ""
+        if indexing {
+            empty = "Listing files…"
+        } else if results.isEmpty {
+            if items == nil { empty = "No matching files" } else if items?.isEmpty == true { empty = "Nothing here" } else { empty = "No matches" }
+        }
+        emptyLabel.stringValue = empty
         emptyLabel.isHidden = emptyLabel.stringValue.isEmpty
         heightConstraint.constant = Self.rowHeight * CGFloat(min(max(results.count, 1), Self.maxRows))
         resizeToFit()
@@ -189,9 +227,10 @@ final class QuickOpenPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate,
 
     private func pick(_ row: Int) {
         guard results.indices.contains(row) else { return }
-        let url = urls[results[row].index]
+        let index = results[row].index
         dismiss()
-        onPick(url)
+        if let onPickItem { onPickItem(index); return }
+        onPick(urls[index])
     }
 
     @objc private func rowClicked(_ sender: Any?) { pick(table.clickedRow) }
@@ -231,7 +270,11 @@ final class QuickOpenPanel: NSPanel, NSTableViewDataSource, NSTableViewDelegate,
         let id = NSUserInterfaceItemIdentifier("result")
         let cell = tableView.makeView(withIdentifier: id, owner: self) as? ResultCell ?? ResultCell(identifier: id)
         let hit = results[row]
-        cell.show(candidates[hit.index].text, matched: hit.result.positions, selected: row == tableView.selectedRow)
+        if let items {
+            cell.show(item: items[hit.index], matched: hit.result.positions, selected: row == tableView.selectedRow)
+        } else {
+            cell.show(candidates[hit.index].text, matched: hit.result.positions, selected: row == tableView.selectedRow)
+        }
         return cell
     }
 }
@@ -270,6 +313,25 @@ private final class ResultCell: NSTableCellView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    /// A list item: its title (matched letters lit), indented, with its note on the right.
+    func show(item: PickerItem, matched: [Int], selected: Bool) {
+        let indent = String(repeating: "  ", count: item.indent)
+        let attributed = NSMutableAttributedString(string: indent + item.title, attributes: [
+            .font: Chrome.fileFont, .foregroundColor: selected ? Chrome.text : Chrome.secondary,
+        ])
+        let utf8 = item.title.utf8
+        for p in matched where p < utf8.count {
+            let start = utf8.index(utf8.startIndex, offsetBy: p)
+            guard start < item.title.endIndex else { continue }
+            let end = item.title[start...].indices.dropFirst().first ?? item.title.endIndex
+            let r = NSRange(start..<end, in: item.title)
+            attributed.addAttributes([.foregroundColor: Chrome.bright], range: NSRange(location: r.location + indent.utf16.count, length: r.length))
+        }
+        name.attributedStringValue = attributed
+        marker.stringValue = selected ? "›" : ""
+        folder.stringValue = item.detail
+    }
 
     func show(_ path: String, matched: [Int], selected: Bool) {
         let bytes = Array(path.utf8)

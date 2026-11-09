@@ -58,3 +58,47 @@ import EditorCore
         #expect(Language.forFileExtension("txt") == nil)
     }
 }
+
+@MainActor
+@Suite struct SymbolTests {
+    func symbols(_ language: Language, _ text: String) -> [String] {
+        SyntaxTree(language: language, buffer: TextBuffer(text))!.symbols()
+            .map { String(repeating: "  ", count: $0.depth) + "\($0.kind) \($0.name)" }
+    }
+
+    @Test func swift() {
+        let text = "struct P {\n  func a() {}\n  init() {}\n}\npublic final class C: X {}\nenum E { case a }\nprotocol Q { func q() }\nextension P { static func s() {} }\nfunc top() {}\n"
+        #expect(symbols(.swift, text) == [
+            "struct P", "  func a", "  init init", "class C", "enum E", "protocol Q", "  func q",
+            "extension P", "  func s", "func top",
+        ])
+    }
+
+    @Test func python() {
+        #expect(symbols(.python, "class C:\n    def m(self): pass\n@dec\ndef h():\n    def inner(): pass\n") ==
+                ["class C", "  def m", "def h", "  def inner"])
+    }
+
+    @Test func javascript() {
+        #expect(symbols(.javascript, "function f() {}\nclass K { m() {} }\nconst a = () => 1\nlet n = 3\nexport default function d() {}\n") ==
+                ["function f", "class K", "  method m", "function a", "function d"])
+    }
+
+    @Test func jsonTopLevelKeys() {
+        #expect(symbols(.json, "{\"name\": 1, \"deps\": {\"x\": 2}}") == ["key \"name\"", "key \"deps\""])
+    }
+
+    @Test func enclosingSymbolsAndRanges() {
+        let text = "struct P {\n  func move(by d: Int) { let x = d + 1 }\n}\n"
+        let tree = SyntaxTree(language: .swift, buffer: TextBuffer(text))!
+        tree.parseSynchronously()
+        let at = text.utf8.count - 10   // inside `d + 1`
+        #expect(tree.enclosingSymbols(at: at).map(\.name) == ["P", "move"])
+        let d = Array(text.utf8).indices.filter { text.utf8[text.utf8.index(text.utf8.startIndex, offsetBy: $0)] == UInt8(ascii: "d") }.last!
+        let steps = tree.enclosingRanges(of: d..<d).map { String(decoding: Array(text.utf8)[$0], as: UTF8.self) }
+        #expect(steps.first == "d")
+        #expect(steps.contains("d + 1"))
+        #expect(steps.contains { $0.hasPrefix("func move") })
+        #expect(steps.last == text || steps.last == String(text.dropLast()))
+    }
+}

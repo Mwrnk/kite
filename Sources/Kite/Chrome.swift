@@ -105,6 +105,11 @@ extension NSRectEdge {
 @MainActor
 final class TextButton: NSButton {
     var isOn = false { didSet { restyle() } }
+    /// The word shown. Set this rather than `title`, which would lose the chrome font.
+    var text: String {
+        get { title }
+        set { title = newValue; restyle() }
+    }
 
     convenience init(title: String, target: AnyObject?, action: Selector?) {
         self.init(frame: .zero)

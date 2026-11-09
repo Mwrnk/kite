@@ -82,6 +82,8 @@ layer, so a Linux UI can reuse them.
 
 ## Next
 
+Research on what to add, with sources and a build order: [FEATURE-RESEARCH.md](FEATURE-RESEARCH.md).
+
 The new look (layout B · Rail) was built on 2026-11-06. Build order, decided on 2026-11-06:
 
 1. **Languages:** the 15 built-in languages listed above. No extras for now. (Skipped for now: the
@@ -89,7 +91,20 @@ The new look (layout B · Rail) was built on 2026-11-06. Build order, decided on
 2. **Session restore** (done 2026-11-07): each window reopens with its tabs, cursors, scroll positions and unsaved
    edits. Quitting never asks. Closing a tab with unsaved changes still asks (Save / Don't Save).
    With nothing to restore, Kite opens a plain window listing recent folders and files (text only).
-3. **Find and replace:** regex, match case, whole word, `$1`, plus Replace in Files with a preview.
+3. **Find and replace** (done 2026-11-07):
+   - Find bar options are words, dim when off: `case  word  regex  selection` (⌥⌘C, ⌥⌘W, ⌥⌘R, ⌥⌘L).
+   - ⌘F shows the find row; ⌥⌘F also shows the replace row (`replace` = this one and go to the
+     next, `all` = every match). The count reads `3 of 12`; a broken regex shows in the count.
+   - Regex is ICU (`NSRegularExpression`): `\w`, `\b`, lookarounds, `(?i)`, `^`/`$` per line,
+     matches may span lines. `$1` and `${name}` in the replacement; plain mode replaces literally.
+   - `selection` keeps find and replace inside the selected block; it turns on by itself when find
+     opens with several lines selected.
+   - ⌥Return in the find field (or ⌃⌘G) puts a cursor on every match.
+   - Replace in Files: the project search gets a replace field and shows each match as `- old` /
+     `+ new`. Clicking a match or file skips it (it goes faint). Applying edits files in memory
+     as one undo step each and opens them as unsaved background tabs; File ▸ Save All (⌥⌘S) saves.
+     Over 20 files it asks once, saves directly (files already open stay unsaved in their tabs),
+     and keeps the originals so Edit ▸ Undo Replace in Files can put them back.
 4. **Split panes:** 2 panes (⌘\\ side by side, ⌥⌘\\ stacked).
 5. **Run tasks:** ⌘R with the output panel and clickable `file:line` errors.
 6. **Git marks:** change bars in the gutter, changed files tinted in the list.
