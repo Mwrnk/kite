@@ -172,17 +172,25 @@ final class MarkdownPreview: NSView, NSTextViewDelegate {
         return top
     }
 
-    /// A local image next to the file, or nil for web images and missing files.
-    private func image(_ source: String) -> NSImage? {
-        if source.hasPrefix("http:") || source.hasPrefix("https:") || source.hasPrefix("data:") { return nil }
-        let url: URL
-        if let absolute = URL(string: source), absolute.scheme == "file" {
-            url = absolute
-        } else {
-            let decoded = source.removingPercentEncoding ?? source
-            guard let folder = fileURL?.deletingLastPathComponent() else { return nil }
-            url = decoded.hasPrefix("/") ? URL(fileURLWithPath: decoded) : folder.appendingPathComponent(decoded)
+    /// A file the document names by relative path, inside the project (or the file's folder) and
+    /// reached without symbolic links. Anything else could make macOS connect to a network share
+    /// just by looking at the path, and the preview never reaches the network.
+    private func localFile(_ source: String) -> URL? {
+        guard let folder = fileURL?.deletingLastPathComponent() else { return nil }
+        let root = Project.containing(fileURL)?.root ?? folder
+        guard let file = MarkdownPaths.localFile(source, folder: folder, root: root) else { return nil }
+        // No symbolic links on the way from the root down (lstat only: a link is never followed).
+        var step = root.standardizedFileURL
+        for part in file.path.dropFirst(step.path.count).split(separator: "/") {
+            step.appendPathComponent(String(part))
+            if (try? step.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true { return nil }
         }
+        return file
+    }
+
+    /// A local image, or nil for web images, missing files and anything `localFile` refuses.
+    private func image(_ source: String) -> NSImage? {
+        guard let url = localFile(source) else { return nil }
         if let cached = images[url] { return cached }
         // Only plain files of a sane size: /dev/zero or a pipe would hang the window.
         guard let info = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
@@ -200,11 +208,8 @@ final class MarkdownPreview: NSView, NSTextViewDelegate {
             NSWorkspace.shared.open(url)
             return true
         }
-        // A file next to this one: open it in Kite.
-        let path = (target.components(separatedBy: "#").first ?? target).removingPercentEncoding ?? target
-        guard !path.isEmpty, let folder = fileURL?.deletingLastPathComponent() else { return true }
-        let file = path.hasPrefix("/") ? URL(fileURLWithPath: path) : folder.appendingPathComponent(path)
-        if FileManager.default.fileExists(atPath: file.path) {
+        // A file in the project: open it in Kite. Other schemes and paths are ignored.
+        if let file = localFile(target), FileManager.default.fileExists(atPath: file.path) {
             NSDocumentController.shared.openDocument(withContentsOf: file, display: true) { _, _, _ in }
         }
         return true
