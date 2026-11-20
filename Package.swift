@@ -51,13 +51,17 @@ let package = Package(
             resources: [.copy("Queries")]
         ),
 
+        // Markdown files as blocks with their source lines, for the preview. Foundation only.
+        .target(name: "Markdown"),
+
         // The macOS app.
         .executableTarget(
             name: "Kite",
-            dependencies: ["EditorCore", "Syntax"]
+            dependencies: ["EditorCore", "Syntax", "Markdown"]
         ),
 
         .testTarget(name: "EditorCoreTests", dependencies: ["EditorCore"]),
         .testTarget(name: "SyntaxTests", dependencies: ["Syntax"]),
+        .testTarget(name: "MarkdownTests", dependencies: ["Markdown"]),
     ]
 )

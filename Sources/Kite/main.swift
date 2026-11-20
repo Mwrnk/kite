@@ -52,6 +52,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Development aid: KITE_SNAPSHOT=/path.png saves the front window, as drawn, after 2.5 s.
         guard let path = ProcessInfo.processInfo.environment["KITE_SNAPSHOT"] else { return }
         guard ProcessInfo.processInfo.environment["KITE_TEST_SCRIPT"] == nil else { return }   // the script takes it
+        if ProcessInfo.processInfo.environment["KITE_PREVIEW"] != nil {
+            // KITE_PREVIEW=1 opens the Markdown preview in the front tab first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                MainActor.assumeIsolated { EditorWindowController.all.first?.toggleMarkdownPreview(nil) }
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             MainActor.assumeIsolated {
                 DevTools.snapshotFrontWindow(to: path)

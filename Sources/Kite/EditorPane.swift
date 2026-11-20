@@ -1,5 +1,6 @@
 import AppKit
 import EditorCore
+import Markdown
 import Syntax
 
 /// One open file inside a window: the gutter, the scrolling editor and the bots layer. Each tab
@@ -25,6 +26,16 @@ final class EditorPane {
     var onChange: ((_ textChanged: Bool) -> Void)?
 
     private var lastLineCount = 0
+    /// The gutter and the scrolling editor, side by side.
+    private let editorRow: NSStackView
+    /// Made the first time the Markdown preview opens: the editor row on the left, the preview on the right.
+    private var previewSplit: HairlineSplitView?
+    private(set) var preview: MarkdownPreview?
+    /// Bumped on every change, so a parse that finishes after a newer one is dropped.
+    private var previewGeneration = 0
+    private var previewTask: Task<Void, Never>?
+    /// False from a change until the preview shows it (dev tools wait on this).
+    private(set) var isPreviewUpToDate = false
 
     init(editor: TextEditor, document: TextDocument?, language: Language?) {
         self.document = document
@@ -47,27 +58,21 @@ final class EditorPane {
         row.spacing = 0
         row.alignment = .height
         row.translatesAutoresizingMaskIntoConstraints = false
+        editorRow = row
         scrollView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         view.addSubview(row)
         // Bots sit above the code; clicks pass through them.
         bots.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(bots)
-        NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            row.topAnchor.constraint(equalTo: view.topAnchor),
-            row.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            bots.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
-            bots.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
-            bots.topAnchor.constraint(equalTo: scrollView.topAnchor),
-            bots.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
-        ])
+        pin(row, to: view)
+        pinBots()
 
         NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification,
                                                object: scrollView.contentView, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.gutter.needsDisplay = true
                 self?.updateBotFocus(.scrolled)
+                self?.syncPreviewScroll()
             }
         }
         NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification,
@@ -86,7 +91,126 @@ final class EditorPane {
         find.onChange = { [weak self] in self?.editorView.needsDisplay = true }
         setLanguage(language)
         editorView.onChange = { [weak self] textChanged in self?.editorDidChange(textChanged: textChanged) }
+        editorView.onFontSizeChange = { [weak self] in
+            guard let self, let preview = self.preview else { return }
+            preview.fontSize = self.editorView.font.pointSize
+            self.syncPreviewScroll()
+        }
         lastLineCount = editor.buffer.lineCount
+    }
+
+    private func pin(_ child: NSView, to parent: NSView) {
+        NSLayoutConstraint.activate([
+            child.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
+            child.trailingAnchor.constraint(equalTo: parent.trailingAnchor),
+            child.topAnchor.constraint(equalTo: parent.topAnchor),
+            child.bottomAnchor.constraint(equalTo: parent.bottomAnchor),
+        ])
+    }
+
+    /// The bots cover the editor's scroll view, and only that.
+    private func pinBots() {
+        NSLayoutConstraint.activate([
+            bots.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
+            bots.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
+            bots.topAnchor.constraint(equalTo: scrollView.topAnchor),
+            bots.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
+        ])
+    }
+
+    // MARK: Markdown preview
+
+    /// Files the preview is offered for.
+    static func isMarkdown(_ url: URL?) -> Bool {
+        guard let ext = url?.pathExtension.lowercased() else { return false }
+        return ["md", "markdown", "mdown", "mkd"].contains(ext)
+    }
+
+    var isPreviewShown: Bool { preview.map { !$0.isHidden } ?? false }
+
+    /// Shows the preview beside the editor, or hides it.
+    func togglePreview() {
+        if isPreviewShown {
+            preview?.isHidden = true
+            previewSplit?.adjustSubviews()
+            previewTask?.cancel()
+            return
+        }
+        if previewSplit == nil { buildPreviewSplit() }
+        preview?.isHidden = false
+        previewSplit?.adjustSubviews()
+        if let split = previewSplit {
+            view.layoutSubtreeIfNeeded()
+            split.setPosition(floor(split.bounds.width / 2), ofDividerAt: 0)
+        }
+        updatePreview(after: .zero)
+    }
+
+    /// Moves the editor row into a split with the preview beside it. Only done once per tab.
+    private func buildPreviewSplit() {
+        let split = HairlineSplitView()
+        split.isVertical = true
+        split.translatesAutoresizingMaskIntoConstraints = false
+        let preview = MarkdownPreview(fileURL: document?.fileURL ?? fileURL)
+        preview.fontSize = editorView.font.pointSize
+        editorRow.removeFromSuperview()   // takes the bots' constraints with it
+        view.addSubview(split, positioned: .below, relativeTo: bots)
+        pin(split, to: view)
+        split.addArrangedSubview(editorRow)
+        split.addArrangedSubview(preview)
+        pinBots()
+        previewSplit = split
+        self.preview = preview
+    }
+
+    /// True while a parse runs off the main thread. Only one runs at a time, so a long file
+    /// being typed in doesn't pile up parses.
+    private var isParsingPreview = false
+
+    /// Parses the text after `delay` (a pause in typing), then shows it.
+    private func updatePreview(after delay: Duration) {
+        previewGeneration += 1
+        isPreviewUpToDate = false
+        previewTask?.cancel()   // only the wait; a parse already running carries on
+        previewTask = Task { [weak self] in
+            if delay > .zero {
+                try? await Task.sleep(for: delay)
+                if Task.isCancelled { return }
+            }
+            self?.parsePreview()
+        }
+    }
+
+    private func parsePreview() {
+        guard !isParsingPreview, isPreviewShown else { return }   // a running parse re-runs itself if needed
+        isParsingPreview = true
+        let generation = previewGeneration
+        let text = editor.text
+        Task { [weak self] in
+            let parsed = await Task.detached(priority: .utility) { MarkdownDocument.parse(text) }.value
+            guard let self else { return }
+            self.isParsingPreview = false
+            guard self.isPreviewShown, let preview = self.preview else { return }
+            // Even if the text changed meanwhile, this is newer than what's shown.
+            preview.fileURL = self.document?.fileURL ?? self.fileURL
+            preview.show(parsed)
+            self.syncPreviewScroll()
+            if generation == self.previewGeneration {
+                self.isPreviewUpToDate = true
+            } else {
+                self.parsePreview()
+            }
+        }
+    }
+
+    /// Puts the preview at the block the editor's top line is in.
+    private func syncPreviewScroll() {
+        guard isPreviewShown, let preview else { return }
+        let y = scrollView.contentView.bounds.origin.y
+        let line = editorView.line(atY: y)
+        let top = editorView.lineTop(line)
+        let height = max(editorView.lineTop(line + 1) - top, editorView.lineHeight)
+        preview.scroll(toLine: line, fraction: min(max((y - top) / height, 0), 1))
     }
 
     var editor: TextEditor { editorView.editor }
@@ -103,6 +227,7 @@ final class EditorPane {
             let count = editor.buffer.lineCount
             if String(count).count != String(lastLineCount).count { gutter.updateThickness() }
             lastLineCount = count
+            if isPreviewShown { updatePreview(after: .milliseconds(150)) }
         }
         gutter.needsDisplay = true
         updateBotFocus(textChanged ? .edited : .caretMoved)

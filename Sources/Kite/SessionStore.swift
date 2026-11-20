@@ -33,7 +33,10 @@ enum SessionStore {
         var backup: String?
     }
 
-    static var isEnabled: Bool { ProcessInfo.processInfo.environment["KITE_NO_SESSION"] == nil }
+    static var isEnabled: Bool { !isOffForDevTools && ProcessInfo.processInfo.environment["KITE_NO_SESSION"] == nil }
+    /// Set by `--render`, `--bench` and the other command-line tools: their windows are offscreen, so a
+    /// save would write an empty session over the real one and delete its backups.
+    static var isOffForDevTools = false
 
     /// Set once Kite has saved for quitting; later saves would see already-cleared documents.
     static var isQuitting = false

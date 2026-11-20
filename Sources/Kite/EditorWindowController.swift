@@ -478,7 +478,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         if joined == nil, let window = controller.window {
             window.setFrame(NSRectFromString(state.frame), display: false)
         }
-        if joined == nil, state.fileListHidden, let sidebar = controller.sidebar, !sidebar.isHidden { controller.toggleSidebar(nil) }
+        if joined == nil, state.fileListHidden, let sidebar = controller.sidebar, !sidebar.isHidden { controller.toggleFileList(nil) }
         for item in restored {
             guard let pane = controller.panes.first(where: { $0.document === item.doc }) else { continue }
             let count = item.doc.editor.buffer.byteCount
@@ -614,7 +614,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     @objc func findInProject(_ sender: Any?) {
         guard let sidebar else { return }
-        if sidebar.isHidden { toggleSidebar(nil) }
+        if sidebar.isHidden { toggleFileList(nil) }
         let selected = activePane?.editor.selectedText ?? ""
         sidebar.showSearch(with: selected.isEmpty ? nil : selected)
     }
@@ -640,7 +640,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         }
     }
 
-    @objc func toggleSidebar(_ sender: Any?) {
+    /// Not named toggleSidebar: NSWindow has an action of that name and would catch the shortcut first.
+    @objc func toggleFileList(_ sender: Any?) {
         guard let sidebar else { return }
         sidebar.isHidden.toggle()
         split.adjustSubviews()
@@ -673,6 +674,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     @objc func toggleBots(_ sender: Any?) { BotsOverlay.isEnabled.toggle() }
 
+    @objc func toggleMarkdownPreview(_ sender: Any?) {
+        guard let pane = activePane else { return }
+        pane.togglePreview()
+        window?.makeFirstResponder(pane.editorView)
+    }
+
     @objc func toggleRainbowColors(_ sender: Any?) {
         UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: "rainbowColors"), forKey: "rainbowColors")
         for controller in Self.all {
@@ -689,10 +696,15 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         case #selector(undoReplaceInFiles(_:)): return !ProjectReplace.lastSaved.isEmpty
         case #selector(saveAllFiles(_:)):
             return NSDocumentController.shared.documents.contains { $0.isDocumentEdited && $0.fileURL != nil }
-        case #selector(toggleSidebar(_:)):
+        case #selector(toggleFileList(_:)):
             item.state = sidebar.map { $0.isHidden ? .off : .on } ?? .off
             return sidebar != nil
         case #selector(toggleBots(_:)): item.state = BotsOverlay.isEnabled ? .on : .off
+        case #selector(toggleMarkdownPreview(_:)):
+            let shown = activePane?.isPreviewShown == true
+            item.state = shown ? .on : .off
+            // An open preview can always be closed, even if Save As gave the file another extension.
+            return shown || EditorPane.isMarkdown(activePane?.document?.fileURL ?? activePane?.fileURL)
         case #selector(toggleRainbowColors(_:)): item.state = UserDefaults.standard.bool(forKey: "rainbowColors") ? .on : .off
         case #selector(nextTab(_:)), #selector(previousTab(_:)): return panes.count > 1
         case #selector(showFindBar(_:)), #selector(showFindAndReplace(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)),

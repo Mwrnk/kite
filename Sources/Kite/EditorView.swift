@@ -857,7 +857,11 @@ final class EditorView: NSView, @preconcurrency NSTextInputClient, NSMenuItemVal
         setFontSize(font.pointSize + delta)
         UserDefaults.standard.set(font.pointSize, forKey: "fontSize")
         scrollToVisible(caretRect(for: caret))
+        onFontSizeChange?()
     }
+
+    /// Called after ⌘+ / ⌘- / ⌘0 change the text size (the Markdown preview follows it).
+    var onFontSizeChange: (() -> Void)?
 
     @objc func goToLine(_ sender: Any?) {
         let alert = NSAlert()

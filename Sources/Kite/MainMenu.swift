@@ -93,13 +93,15 @@ enum MainMenu {
         item(view, "Smaller Text", #selector(EditorView.zoomOut(_:)), "-")
         item(view, "Actual Size", #selector(EditorView.resetZoom(_:)), "0")
         view.addItem(.separator())
-        item(view, "Show File List", #selector(EditorWindowController.toggleSidebar(_:)), "s", [.command, .control])
+        item(view, "Show File List", #selector(EditorWindowController.toggleFileList(_:)), "b")   // ⌘B, as in VS Code and Zed
+        item(view, "Show File List", #selector(EditorWindowController.toggleFileList(_:)), "s", [.command, .control]).isHidden = true  // ⌃⌘S still works
         item(view, "Rainbow Colors", #selector(EditorWindowController.toggleRainbowColors(_:)), "")
         view.addItem(.separator())
         item(view, "Next Tab", #selector(EditorWindowController.nextTab(_:)), "\t", [.control])
         item(view, "Previous Tab", #selector(EditorWindowController.previousTab(_:)), "\t", [.control, .shift])
         view.addItem(.separator())
         item(view, "Word Wrap", #selector(EditorView.toggleWordWrap(_:)), "z", [.option])
+        item(view, "Markdown Preview", #selector(EditorWindowController.toggleMarkdownPreview(_:)), "v", [.command, .shift])
         item(view, "Show Bots", #selector(EditorWindowController.toggleBots(_:)), "b", [.command, .shift])
         item(view, "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control])
 

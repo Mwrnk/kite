@@ -11,7 +11,7 @@ The base for a live AI code tutor (coming later).
 ```bash
 scripts/bundle.sh            # builds build/Kite.app (release)
 open build/Kite.app
-swift test                   # 99 tests: buffer, editing, undo, multiple cursors, brackets, find, syntax
+swift test                   # buffer, editing, undo, multiple cursors, brackets, find, syntax, markdown
 scripts/make-icon.sh         # remakes the app icon (assets/AppIcon.icns) from assets/logo.svg
 ```
 
@@ -23,6 +23,7 @@ While developing you can run the binary directly with files: `.build/debug/Kite 
 |---|---|---|
 | `EditorCore` | `PieceTable` (text storage, UTF-8), `TextBuffer` (line index, UTF-16 bridge, edit events), `TextEditor` (selection, every editing command, undo), `TextFileCodec` (encodings, line endings) | No |
 | `Syntax` | Tree-sitter parsing on a background queue, highlight queries with `#eq?`/`#match?`/`#any-of?` | No |
+| `Markdown` | A Markdown file as blocks with their source lines (parsed by Foundation), for the preview | No |
 | `Kite` | The app: `EditorView` (Core Text, only visible lines), gutter, find bar, status bar, `NSDocument`, menus, `BotsOverlay` (the little bots) | Yes |
 | `Vendor/` | tree-sitter v0.27.1 and the Swift, Python, JavaScript and JSON grammars, compiled from source | – |
 
@@ -38,8 +39,10 @@ and the AI tutor will too.
 ```bash
 Kite --render file.swift out.png [--light] [--line N] [--select A:B] [--find text [--regex] [--find-in A:B]]
      [--wrap] [--project DIR] [--quick-open QUERY] [--search QUERY] [--cursors A,B,…]
+     [--preview [--type TEXT]]     # Markdown preview open; --type types at the top and waits for it
 KITE_SNAPSHOT=out.png Kite folder file   # saves the real window as drawn, then quits
-Kite --bench big-file.swift          # load, parse, typing and scrolling timings
+                                     # (KITE_PREVIEW=1 opens the Markdown preview first)
+Kite --bench big-file.swift [--preview]   # load, parse, typing and scrolling timings
 Kite --selftest-save file.py         # opens, edits, saves and checks the bytes on disk
 scripts/budget.sh                    # builds release and checks size, launch, memory, typing, scroll
 ```
@@ -56,8 +59,7 @@ brighter), Kite's own text tabs on top (a dot marks unsaved files, × appears on
 closes), the open file, and one status line at the bottom. Window buttons appear when the pointer
 nears the top edge. Colors are flat: dimmed comments plus one hue each for keywords, strings and
 numbers (View ▸ Rainbow Colors brings back the many-color theme). Bots are off unless turned on in
-View ▸ Show Bots. The design is documented on the Kite Editor Design canvas and in
-[docs/EDITOR-SPEC.md](docs/EDITOR-SPEC.md).
+View ▸ Show Bots.
 
 ## Sessions
 
@@ -70,7 +72,7 @@ open, Kite shows a plain list of recent folders and files: ↑↓ and Return, or
 ## Projects
 
 Open a folder with **File ▸ Open Folder…** (⇧⌘O), `Kite path/to/folder`, or by dropping it on the Dock
-icon. The file list (⌃⌘S) shows its files; `.git`, `node_modules`, `.build`, `build`, `__pycache__` and
+icon. The file list (⌘B) shows its files; `.git`, `node_modules`, `.build`, `build`, `__pycache__` and
 similar are hidden, and the tree updates when files change on disk. Any file you open from inside the
 folder joins the project.
 
@@ -126,7 +128,8 @@ copying from N cursors and pasting into N cursors gives each its own line.
 **Files:** ⌥⌘S save all.
 
 **View:** ⌥Z word wrap (wrapped rows keep the line's indentation; off automatically for files over
-200,000 lines) · ⌃⌘S file list · ⌘+ / ⌘- / ⌘0 text size · ⇧⌘B show/hide bots.
+200,000 lines) · ⌘B file list (⌃⌘S also works) · ⌘+ / ⌘- / ⌘0 text size · ⇧⌘B show/hide bots · ⇧⌘V Markdown
+preview beside the editor (for `.md` files; updates as you type and follows your scrolling).
 
 The editor outlines the bracket matching the one at the cursor (ignoring brackets inside strings and
 comments) and draws faint indent guides. Standard macOS text keys (⌥←, ⌘←, ⌃K, …) all work.

@@ -2,3 +2,7 @@
 build/
 .swiftpm/
 .DS_Store
+
+# Planning notes and research: kept locally, not published
+docs/
+plans/

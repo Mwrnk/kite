@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Measures Kite against its limits (docs/EDITOR-SPEC.md). Exits non-zero if any is broken.
+# Measures Kite against its limits (size, launch, memory, typing, scrolling). Exits non-zero if any is broken.
 #   scripts/budget.sh            builds release first
 #   scripts/budget.sh --no-build use the existing build/Kite.app
 set -uo pipefail
@@ -9,7 +9,7 @@ export KITE_NO_SESSION=1   # measure a clean launch, and leave your saved sessio
 APP=build/Kite.app
 BIN=$APP/Contents/MacOS/Kite
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"; pkill -f "$PWD/$BIN" 2>/dev/null' EXIT
+trap 'rm -rf "$TMP"; [[ -n "${pid:-}" ]] && kill $pid 2>/dev/null' EXIT   # only the Kite this script started, never yours
 failed=0
 
 report() {   # name, value, unit, limit, comparison ("<" means value must be below limit)

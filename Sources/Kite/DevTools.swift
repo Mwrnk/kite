@@ -1,13 +1,18 @@
 import AppKit
 import EditorCore
+import Markdown
 import Syntax
 
 /// Command-line tools for checking the editor without a screen:
-///   Kite --render <file> <out.png> [--dark|--light] [--line N] [--select A:B] [--size WxH] [--wrap] [--project DIR] [--quick-open QUERY] [--search QUERY] [--cursors A,B,…]
-///   Kite --bench <file>
+///   Kite --render <file> <out.png> [--dark|--light] [--preview] [--line N] [--select A:B] [--size WxH] [--wrap] [--project DIR] [--quick-open QUERY] [--search QUERY] [--cursors A,B,…]
+///   Kite --bench <file> [--preview]
 enum DevTools {
     @MainActor
     static func handle(_ args: [String]) -> Bool {
+        // None of these tools may touch the real session (see SessionStore.isOffForDevTools).
+        if ["--render", "--selftest-save", "--bench"].contains(where: args.contains) {
+            SessionStore.isOffForDevTools = true
+        }
         if let i = args.firstIndex(of: "--render"), i + 2 < args.count {
             render(file: args[i + 1], output: args[i + 2], args: args)
             return true
@@ -17,7 +22,7 @@ enum DevTools {
             return true
         }
         if let i = args.firstIndex(of: "--bench"), i + 1 < args.count {
-            bench(file: args[i + 1])
+            bench(file: args[i + 1], preview: args.contains("--preview"))
             return true
         }
         return false
@@ -83,6 +88,26 @@ enum DevTools {
                         c.window?.setFrame(NSRect(x: 120, y: 140, width: 1000, height: 650), display: false)
                     }
                     print("edited; quitting")
+                case "toggle-file-list":
+                    // Presses ⌘B twice through the app, as typed, and reports the file list after each.
+                    guard let c = EditorWindowController.all.first, let window = c.window else { print("no window"); break }
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate()
+                    // Key presses sent before the app is active are dropped; wait for it.
+                    let deadline = Date().addingTimeInterval(3)
+                    while !(NSApp.isActive && window.isKeyWindow) && Date() < deadline {
+                        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                    }
+                    print("file list hidden=\(c.projectSidebar?.isHidden.description ?? "no sidebar") (before)")
+                    for _ in 0..<2 {
+                        if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command],
+                                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                                        context: nil, characters: "b", charactersIgnoringModifiers: "b",
+                                                        isARepeat: false, keyCode: 11) {
+                            NSApp.sendEvent(event)
+                        }
+                        print("file list hidden=\(c.projectSidebar?.isHidden.description ?? "no sidebar")")
+                    }
                 case "report":
                     for c in EditorWindowController.all {
                         print("window project=\(c.project?.name ?? "none") tabs=\(c.panes.count) frame=\(NSStringFromRect(c.window?.frame ?? .zero))")
@@ -364,6 +389,15 @@ enum DevTools {
         return (editor, Language.forFileExtension(url.pathExtension))
     }
 
+    /// Runs the main loop until the pane's Markdown preview shows the current text.
+    @MainActor
+    static func waitForPreview(_ pane: EditorPane, timeout: TimeInterval = 10) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !pane.isPreviewUpToDate && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+    }
+
     @MainActor
     private static func render(file: String, output: String, args: [String]) {
         let (editor, language) = load(file)
@@ -391,6 +425,16 @@ enum DevTools {
         if let list = value(args, "--cursors")?.split(separator: ",").compactMap({ Int($0) }), let first = list.first {
             editor.setSelection(Selection(caret: first))
             for offset in list.dropFirst() { editor.addSelection(Selection(caret: offset)) }
+        }
+        if args.contains("--preview"), let pane = controller.panes.first {
+            controller.toggleMarkdownPreview(nil)
+            waitForPreview(pane)
+            // --type TEXT types at the start of the file, then waits for the preview to catch up.
+            if let typed = value(args, "--type") {
+                editor.setSelection(Selection(caret: 0))
+                editor.insertText(typed.replacingOccurrences(of: "\\n", with: "\n"))
+                waitForPreview(pane)
+            }
         }
         if let line = value(args, "--line").flatMap(Int.init) {
             view.scroll(NSPoint(x: 0, y: view.lineTop(max(line - 1, 0))))
@@ -563,7 +607,7 @@ enum DevTools {
     }
 
     @MainActor
-    private static func bench(file: String) {
+    private static func bench(file: String, preview: Bool) {
         func time(_ label: String, _ body: () -> Void) {
             let start = ContinuousClock.now
             body()
@@ -593,6 +637,25 @@ enum DevTools {
         }
         view.syntax = syntax
         view.updateFrameSize()
+        if preview, let pane = controller.panes.first {
+            // The parse runs off the main thread; showing it is main-thread work, timed apart.
+            var parsed = MarkdownDocument(blocks: [])
+            time("markdown parse (off main)") { parsed = MarkdownDocument.parse(editor.text) }
+            print("  \(parsed.blocks.count) blocks")
+            time("open preview, first render") {
+                controller.toggleMarkdownPreview(nil)
+                waitForPreview(pane, timeout: 60)
+            }
+            time("preview scroll to middle line") { pane.preview?.scroll(toLine: editor.buffer.lineCount / 2, fraction: 0) }
+            // One keystroke's worth of change in the middle, as the preview sees it after the pause.
+            let middleLine = editor.buffer.lineCount / 2
+            editor.setSelection(Selection(caret: editor.buffer.lineStarts[middleLine]))
+            editor.insertText("x")
+            let edited = MarkdownDocument.parse(editor.text)
+            time("preview update after an edit (main)") { pane.preview?.show(edited) }
+            time("preview scroll after the edit") { pane.preview?.scroll(toLine: middleLine, fraction: 0.5) }
+            editor.undo()
+        }
         // Draw only the editor view, so we time our drawing rather than window chrome.
         let content = view
         let rep = view.bitmapImageRepForCachingDisplay(in: view.visibleRect)!
@@ -664,7 +727,8 @@ enum DevTools {
         time("undo it") { editor.undo() }
         let all = query.matches(in: editor.text, includeEmpty: false).prefix(FindBar.maxCursors)
             .map { Selection(anchor: $0.lowerBound, head: $0.upperBound) }
-        time("cursor on all \(all.count) matches") { editor.setSelections(main: all[0], others: all) }
+        guard let first = all.first else { return }   // e.g. a Markdown file: no calls to put cursors on
+        time("cursor on all \(all.count) matches") { editor.setSelections(main: first, others: all) }
         time("type one char at every cursor") { editor.insertText("x") }
         time("undo it") { editor.undo() }
     }
