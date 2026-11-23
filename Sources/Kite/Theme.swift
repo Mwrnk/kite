@@ -35,6 +35,7 @@ struct Theme {
             .string: hex(0xA6C48F), .escape: hex(0xA6C48F),
             .number: hex(0xD9A774), .constant: hex(0xD9A774),
             .comment: hex(0x7A7F87),
+            .added: hex(0xA6C48F), .removed: hex(0xE07B7B),
         ],
         isDark: true)
 
@@ -48,6 +49,7 @@ struct Theme {
             .string: hex(0x4B7A3E), .escape: hex(0x4B7A3E),
             .number: hex(0xA25E14), .constant: hex(0xA25E14),
             .comment: hex(0x7D8189),
+            .added: hex(0x4B7A3E), .removed: hex(0xB54A4A),
         ],
         isDark: false)
 
@@ -64,6 +66,7 @@ struct Theme {
             .property: hex(0xE59A9A), .parameter: hex(0xE6C9A8), .attribute: hex(0xF0A86B),
             .label: hex(0xE59A9A), .operator: hex(0x9EC6F0), .punctuation: hex(0x8D94A1),
             .tag: hex(0xE59A9A),
+            .added: hex(0xA6C48F), .removed: hex(0xE07B7B),
         ],
         isDark: true)
 
@@ -79,6 +82,7 @@ struct Theme {
             .property: hex(0xC2414B), .parameter: hex(0x7A4A1F), .attribute: hex(0xB05A00),
             .label: hex(0xC2414B), .operator: hex(0x3B4A5E), .punctuation: hex(0x6E7681),
             .tag: hex(0xC2414B),
+            .added: hex(0x2F8A3A), .removed: hex(0xC2414B),
         ],
         isDark: false)
 

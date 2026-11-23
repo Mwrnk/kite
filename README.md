@@ -25,13 +25,17 @@ While developing you can run the binary directly with files: `.build/debug/Kite 
 | `Syntax` | Tree-sitter parsing on a background queue, highlight queries with `#eq?`/`#match?`/`#any-of?` | No |
 | `Markdown` | A Markdown file as blocks with their source lines (parsed by Foundation), for the preview | No |
 | `Kite` | The app: `EditorView` (Core Text, only visible lines), gutter, find bar, status bar, `NSDocument`, menus, `BotsOverlay` (the little bots) | Yes |
-| `Vendor/` | tree-sitter v0.27.1 and the Swift, Python, JavaScript and JSON grammars, compiled from source | – |
+| `Vendor/` | tree-sitter v0.27.1 and its language grammars, compiled from source | – |
 
 Every buffer change emits a `BufferEdit` (byte range + row/column). Syntax parsing listens to it,
 and the AI tutor will too.
 
-**Adding a language:** copy the grammar's `src/` into `Vendor/grammars/<name>`, add a target in
-`Package.swift`, add a case to `Language`, and copy its `queries/highlights.scm` to
+**Languages with colors:** Swift, Python, JavaScript/JSX, TypeScript, TSX, JSON, Markdown, Shell, HTML,
+CSS, YAML, Rust, Go, C, Java and diff/patch files. Anything else opens as plain text. Markdown files over
+512 KB keep their block colors (headings, lists, code blocks) but not bold, code spans or links.
+
+**Adding a language:** copy the grammar's `src/` into `Vendor/grammars/<name>`, add its name to
+`grammarNames` in `Package.swift`, add a case to `Language`, and copy its `queries/highlights.scm` to
 `Sources/Syntax/Queries/<name>.scm`.
 
 ## Developer tools (no screen needed)
@@ -137,5 +141,5 @@ comments) and draws faint indent guides. Standard macOS text keys (⌥←, ⌘�
 ## License
 
 Kite is free software under the [GNU General Public License v3.0](LICENSE). It bundles
-[tree-sitter](Vendor/tree-sitter/LICENSE) and its grammars for Swift, Python, JavaScript and JSON,
-which are MIT licensed (see `Vendor/*/LICENSE`).
+[tree-sitter](Vendor/tree-sitter/LICENSE) and its language grammars, which are MIT licensed (see
+`Vendor/grammars/*/LICENSE`).

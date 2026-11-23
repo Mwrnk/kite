@@ -143,6 +143,8 @@ extension SyntaxTree {
             guard t == "pair", let object = Optional(ts_node_parent(node)), !ts_node_is_null(object),
                   type(object) == "object", type(ts_node_parent(object)) == "document" else { return nil }
             return make("key", node, name: field(node, "key"), depth: depth)
+        default:
+            return nil   // colors only so far: no outline rules for this language
         }
     }
 }

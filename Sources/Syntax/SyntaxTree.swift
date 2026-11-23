@@ -15,6 +15,8 @@ public final class SyntaxTree {
     private let worker: ParseWorker
     /// Compiled in the background when the tree is made; no colors until it's ready.
     private var query: HighlightQuery?
+    /// Markdown only: colors for the text inside paragraphs and headings.
+    private var inlineQuery: HighlightQuery?
     var tree: TreeBox?
 
     private var dirty = true
@@ -45,6 +47,16 @@ public final class SyntaxTree {
                 if query != nil { self.onUpdate?() }
             }
         }
+        if language == .markdown {
+            inlineQuery = HighlightQuery.cached(.markdownInline)
+            if inlineQuery == nil {
+                HighlightQuery.loadInBackground(.markdownInline) { [weak self] query in
+                    guard let self, self.inlineQuery == nil else { return }
+                    self.inlineQuery = query
+                    if query != nil { self.onUpdate?() }
+                }
+            }
+        }
     }
 
     private func apply(_ edit: BufferEdit) {
@@ -53,7 +65,7 @@ public final class SyntaxTree {
             new_end_byte: UInt32(edit.newEndByte),
             start_point: TSPoint(edit.startPoint), old_end_point: TSPoint(edit.oldEndPoint),
             new_end_point: TSPoint(edit.newEndPoint))
-        if let tree { ts_tree_edit(tree.pointer, &e) }
+        tree?.edit(&e)
         if parsing { editsDuringParse.append(e) }
         dirty = true
         scheduleParse()
@@ -82,7 +94,7 @@ public final class SyntaxTree {
         parsing = false
         if gen > appliedGeneration, let result {
             // Edits made while parsing: shift the new tree to match the current text.
-            for var e in editsDuringParse { ts_tree_edit(result.pointer, &e) }
+            for var e in editsDuringParse { result.edit(&e) }
             tree = result
             appliedGeneration = gen
             onUpdate?()
@@ -94,6 +106,7 @@ public final class SyntaxTree {
     /// Parses right now on the calling thread (for tests and tools). The UI never needs this.
     public func parseSynchronously() {
         if query == nil { query = HighlightQuery.load(language) }   // tools and tests want colors right away
+        if language == .markdown, inlineQuery == nil { inlineQuery = HighlightQuery.load(.markdownInline) }
         guard dirty || parsing || tree == nil else { return }
         let snapshot = buffer.storage
         let old = tree?.copy()
@@ -110,7 +123,11 @@ public final class SyntaxTree {
     /// Highlighted spans overlapping `range`, ordered so later spans should paint over earlier ones.
     public func highlights(in range: Range<Int>) -> [HighlightSpan] {
         guard let tree, let query else { return [] }
-        return query.run(on: ts_tree_root_node(tree.pointer), range: range, buffer: buffer)
+        var spans = query.run(on: ts_tree_root_node(tree.pointer), range: range, buffer: buffer)
+        if let inlineQuery, let inline = tree.inlinePointer {
+            spans += inlineQuery.run(on: ts_tree_root_node(inline), range: range, buffer: buffer)
+        }
+        return spans
     }
 
     /// True once a parse result matches the current text.
@@ -133,15 +150,38 @@ extension TSPoint {
 /// (we only edit the main thread's own copy), so sharing the box is safe.
 final class TreeBox: @unchecked Sendable {
     let pointer: OpaquePointer
-    init(_ pointer: OpaquePointer) { self.pointer = pointer }
-    func copy() -> TreeBox { TreeBox(ts_tree_copy(pointer)) }
-    deinit { ts_tree_delete(pointer) }
+    /// Markdown only: a second tree over the text of the first tree's `inline` nodes.
+    let inlinePointer: OpaquePointer?
+
+    init(_ pointer: OpaquePointer, inline: OpaquePointer? = nil) {
+        self.pointer = pointer
+        inlinePointer = inline
+    }
+
+    func copy() -> TreeBox {
+        TreeBox(ts_tree_copy(pointer), inline: inlinePointer.flatMap { ts_tree_copy($0) })
+    }
+
+    func edit(_ e: inout TSInputEdit) {
+        ts_tree_edit(pointer, &e)
+        if let inlinePointer { ts_tree_edit(inlinePointer, &e) }
+    }
+
+    deinit {
+        ts_tree_delete(pointer)
+        if let inlinePointer { ts_tree_delete(inlinePointer) }
+    }
 }
 
 /// Owns the parser. Only used on `queue`.
 final class ParseWorker: @unchecked Sendable {
     let queue = DispatchQueue(label: "kite.syntax.parse", qos: .userInitiated)
     private let parser: OpaquePointer
+    /// Markdown only: parses the text inside the block tree's `inline` nodes.
+    private let inlineParser: OpaquePointer?
+    /// Above this, Markdown keeps its block colors only. The inline parse jumps between thousands of
+    /// separate ranges and its time grows with the square of the file size (28 s at 5.6 MB).
+    static let maxInlineBytes = 512 * 1024
 
     init?(language: Language) {
         parser = ts_parser_new()
@@ -149,9 +189,22 @@ final class ParseWorker: @unchecked Sendable {
             ts_parser_delete(parser)
             return nil
         }
+        if language == .markdown, let inline = ts_parser_new() {
+            guard ts_parser_set_language(inline, Language.markdownInline.tsLanguage) else {
+                ts_parser_delete(inline)
+                ts_parser_delete(parser)
+                return nil
+            }
+            inlineParser = inline
+        } else {
+            inlineParser = nil
+        }
     }
 
-    deinit { ts_parser_delete(parser) }
+    deinit {
+        ts_parser_delete(parser)
+        if let inlineParser { ts_parser_delete(inlineParser) }
+    }
 
     func parse(_ text: PieceTable, old: TreeBox?) -> TreeBox? {
         let reader = InputReader(text: text)
@@ -160,8 +213,56 @@ final class ParseWorker: @unchecked Sendable {
             read: readCallback,
             encoding: TSInputEncodingUTF8,
             decode: nil)
-        let result = withExtendedLifetime(reader) { ts_parser_parse(parser, old?.pointer, input) }
-        return result.map(TreeBox.init)
+        return withExtendedLifetime(reader) {
+            guard let blocks = ts_parser_parse(parser, old?.pointer, input) else { return nil }
+            guard let inlineParser, text.count <= Self.maxInlineBytes else { return TreeBox(blocks) }
+            let ranges = inlineRanges(in: ts_tree_root_node(blocks))
+            // With no ranges, tree-sitter would parse the whole file as inline text.
+            guard !ranges.isEmpty, ts_parser_set_included_ranges(inlineParser, ranges, UInt32(ranges.count)) else {
+                return TreeBox(blocks)
+            }
+            return TreeBox(blocks, inline: ts_parser_parse(inlineParser, old?.inlinePointer, input))
+        }
+    }
+
+    /// The text of every `inline` node, in order, without the children inside it (the `> ` that
+    /// starts each line of a quoted paragraph isn't part of the text).
+    private func inlineRanges(in root: TSNode) -> [TSRange] {
+        var out: [TSRange] = []
+        var cursor = ts_tree_cursor_new(root)
+        defer { ts_tree_cursor_delete(&cursor) }
+        while true {
+            let node = ts_tree_cursor_current_node(&cursor)
+            // By name: the grammar has several symbols that all appear as `inline`.
+            if strcmp(ts_node_type(node), "inline") == 0 {
+                appendText(of: node, to: &out)
+            } else if ts_tree_cursor_goto_first_child(&cursor) {
+                continue
+            }
+            while !ts_tree_cursor_goto_next_sibling(&cursor) {
+                if !ts_tree_cursor_goto_parent(&cursor) { return out }
+            }
+        }
+    }
+
+    private func appendText(of node: TSNode, to out: inout [TSRange]) {
+        var startByte = ts_node_start_byte(node), startPoint = ts_node_start_point(node)
+        func add(upTo endByte: UInt32, _ endPoint: TSPoint) {
+            guard startByte < endByte else { return }
+            out.append(TSRange(start_point: startPoint, end_point: endPoint, start_byte: startByte, end_byte: endByte))
+        }
+        var cursor = ts_tree_cursor_new(node)
+        defer { ts_tree_cursor_delete(&cursor) }
+        if ts_tree_cursor_goto_first_child(&cursor) {
+            repeat {
+                let child = ts_tree_cursor_current_node(&cursor)
+                guard ts_node_is_named(child) else { continue }   // the words themselves are unnamed tokens
+                add(upTo: ts_node_start_byte(child), ts_node_start_point(child))
+                startByte = ts_node_end_byte(child)
+                startPoint = ts_node_end_point(child)
+            } while ts_tree_cursor_goto_next_sibling(&cursor)
+        }
+        add(upTo: ts_node_end_byte(node), ts_node_end_point(node))
     }
 }
 
