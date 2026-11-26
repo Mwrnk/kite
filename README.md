@@ -54,7 +54,9 @@ scripts/budget.sh                    # builds release and checks size, launch, m
 Environment switches: `KITE_NO_SESSION=1` neither restores nor saves the session;
 `KITE_SESSION_DIR=dir` keeps it somewhere else; `KITE_TEST_SCRIPT=…` drives the running app for
 end-to-end checks (`edit-and-quit`, `report`, `start-return`, `note-recent`, `find`,
-`project-replace`; see `DevTools.swift` for what each expects).
+`project-replace`, `toggle-file-list`, `run-task`; see `DevTools.swift` for what each expects).
+`KITE_TEST_BUILD=1 scripts/bundle.sh` builds a separate "Kite Test" app, with its own settings and
+session, for trying unfinished work next to your real Kite.
 
 ## The window
 
@@ -107,6 +109,19 @@ and `selection` (⌥⌘C, ⌥⌘W, ⌥⌘R, ⌥⌘L). The count reads `3 of 12`,
   match (up to 1,000 cursors).
 - Matches are counted in the background, so typing stays fast on big files even with a busy regex.
 
+## Running code
+
+**⌘R** runs your code and shows the output under the editor, as it happens. The nearest project
+file decides what runs: `Package.swift` → `swift run`, `Cargo.toml` → `cargo run`, `go.mod` →
+`go run .`, `package.json` → its `dev`, `start` or `test` script, `Makefile` → `make`. With none, the
+open file runs by its type (Python, JavaScript, Swift, shell, Ruby, Go, Java). Edited files are saved
+first.
+
+- Type in the line under the output and press Return to answer a program that asks for input.
+- Errors like `main.swift:3:21` or Python's `File "x.py", line 4` are links: click to jump there.
+- **⇧⌘R** sets your own command for the folder, remembered until you clear it. **⌘.** stops the
+  program, **⌘J** shows or hides the output, **⌥⌘T** opens Terminal at the folder.
+
 ## Shortcuts
 
 **Code:** ⌘T go to symbol (the file's functions and types, from the parse tree; no language
@@ -130,6 +145,8 @@ copying from N cursors and pasting into N cursors gives each its own line.
 ⌘E use selection · ⇧⌘F find in project · ⌘P quick open.
 
 **Files:** ⌥⌘S save all.
+
+**Run:** ⌘R run · ⇧⌘R run command… · ⌘. stop · ⌘J output · ⌥⌘T open in Terminal.
 
 **View:** ⌥Z word wrap (wrapped rows keep the line's indentation; off automatically for files over
 200,000 lines) · ⌘B file list (⌃⌘S also works) · ⌘+ / ⌘- / ⌘0 text size · ⇧⌘B show/hide bots · ⇧⌘V Markdown

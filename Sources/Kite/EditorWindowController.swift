@@ -30,6 +30,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
     private var closingConfirmed = false
 
     let findBar = FindBar()
+    /// The output of ⌘R, under the editor.
+    let runPanel = RunPanel()
 
     /// Builds a window showing `document`. With no document (offscreen rendering), shows `editor`.
     init(document: TextDocument?, editor: TextEditor? = nil, language: Language? = nil, fileURL: URL? = nil) {
@@ -98,11 +100,14 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
         mainColumn.orientation = .vertical
         mainColumn.spacing = 0
         mainColumn.alignment = .leading
-        for v in [tabBar, findBar, paneHost] as [NSView] {
+        for v in [tabBar, findBar, paneHost, runPanel] as [NSView] {
             mainColumn.addArrangedSubview(v)
             v.widthAnchor.constraint(equalTo: mainColumn.widthAnchor).isActive = true
         }
         tabBar.heightAnchor.constraint(equalToConstant: Chrome.barHeight).isActive = true
+        runPanel.heightAnchor.constraint(equalToConstant: 230).isActive = true
+        runPanel.isHidden = true
+        runPanel.openLocation = { [weak self] url, line, column in self?.open(url, line: line, column: column) }
         paneHost.setContentHuggingPriority(.defaultLow, for: .vertical)
         paneHost.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -674,6 +679,95 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
 
     @objc func toggleBots(_ sender: Any?) { BotsOverlay.isEnabled.toggle() }
 
+    // MARK: Run
+
+    private var activeFileURL: URL? { activePane?.document?.fileURL ?? activePane?.fileURL }
+
+    /// The folder a remembered command belongs to: the project, or the open file's folder.
+    private var runRoot: URL? { project?.root ?? activeFileURL?.deletingLastPathComponent() }
+
+    @objc func runTask(_ sender: Any?) {
+        if let root = runRoot, let saved = RunTask.savedCommand(for: root) {
+            start(RunTask(command: saved, directory: root))
+        } else if let task = RunTask.detect(file: activeFileURL, root: project?.root) {
+            start(task)
+        } else {
+            runCommandPrompt(sender)
+        }
+    }
+
+    @objc func runCommandPrompt(_ sender: Any?) {
+        guard let root = runRoot else { NSSound.beep(); return }
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        field.stringValue = RunTask.savedCommand(for: root)
+            ?? RunTask.detect(file: activeFileURL, root: project?.root)?.command ?? ""
+        field.placeholderString = "e.g. npm test"
+        let alert = NSAlert()
+        alert.messageText = "Command for ⌘R"
+        alert.informativeText = "Runs in \(root.lastPathComponent)/ and is remembered for this folder. Leave it empty to go back to the automatic choice."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Run")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard let window else { return }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            MainActor.assumeIsolated {
+                guard response == .alertFirstButtonReturn, let self else { return }
+                let command = field.stringValue.trimmingCharacters(in: .whitespaces)
+                RunTask.save(command, for: root)
+                if command.isEmpty { self.runTask(nil) } else { self.start(RunTask(command: command, directory: root)) }
+            }
+        }
+    }
+
+    /// Saves edited files first, so what runs is what's on screen.
+    private func start(_ task: RunTask) {
+        let dirty = NSDocumentController.shared.documents.compactMap { $0 as? TextDocument }
+            .filter { $0.isDocumentEdited && $0.fileURL != nil }
+        saveAll(dirty) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                EditorWindowController.all.forEach { $0.refreshTabs() }
+                self.runPanel.isHidden = false
+                self.runPanel.run(task)
+            }
+        }
+    }
+
+    @objc func stopTask(_ sender: Any?) { runPanel.stop() }
+
+    @objc func toggleRunPanel(_ sender: Any?) {
+        runPanel.isHidden.toggle()
+        if runPanel.isHidden, let pane = activePane { window?.makeFirstResponder(pane.editorView) }
+    }
+
+    /// ⌥⌘T: your Terminal app, at the project folder.
+    @objc func openTerminal(_ sender: Any?) {
+        guard let folder = runRoot,
+              let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else { NSSound.beep(); return }
+        NSWorkspace.shared.open([folder], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    /// Opens a file at a 1-based line and column (a clicked file:line in the output).
+    func open(_ url: URL, line: Int, column: Int) {
+        NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { opened, _, error in
+            MainActor.assumeIsolated {
+                if let error { _ = NSApp.presentError(error); return }
+                guard let doc = opened as? TextDocument else { return }
+                let buffer = doc.editor.buffer
+                let row = min(max(line - 1, 0), buffer.lineCount - 1)
+                let start = min(buffer.lineStarts[row] + max(column - 1, 0), buffer.lineRange(row).upperBound)
+                doc.editor.setSelection(Selection(caret: start))
+                if let controller = EditorWindowController.controller(containing: doc) {
+                    let view = controller.editorView
+                    controller.window?.makeFirstResponder(view)
+                    view.scrollToVisible(view.caretRect(for: start).insetBy(dx: 0, dy: -view.visibleRect.height / 3))
+                }
+            }
+        }
+    }
+
     @objc func toggleMarkdownPreview(_ sender: Any?) {
         guard let pane = activePane else { return }
         pane.togglePreview()
@@ -700,6 +794,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate, NSText
             item.state = sidebar.map { $0.isHidden ? .off : .on } ?? .off
             return sidebar != nil
         case #selector(toggleBots(_:)): item.state = BotsOverlay.isEnabled ? .on : .off
+        case #selector(stopTask(_:)): return runPanel.isRunning
+        case #selector(toggleRunPanel(_:)): item.state = runPanel.isHidden ? .off : .on
         case #selector(toggleMarkdownPreview(_:)):
             let shown = activePane?.isPreviewShown == true
             item.state = shown ? .on : .off

@@ -2,6 +2,8 @@
 # Builds Kite and wraps it in a macOS app bundle at build/Kite.app.
 #   scripts/bundle.sh            release build
 #   scripts/bundle.sh debug      debug build
+#   KITE_TEST_BUILD=1 scripts/bundle.sh   a "Kite Test" app with its own settings and session,
+#                                         for trying unfinished work next to your real Kite
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -10,20 +12,22 @@ swift build -c "$CONFIG"
 BIN=$(swift build -c "$CONFIG" --show-bin-path)
 
 APP=build/Kite.app
+NAME=Kite ID=com.mwrnk.kite
+[[ -n "${KITE_TEST_BUILD:-}" ]] && NAME="Kite Test" ID=com.mwrnk.kite.test
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/Kite" "$APP/Contents/MacOS/Kite"
 cp -R "$BIN/Kite_Syntax.bundle" "$APP/Contents/Resources/"
 cp assets/AppIcon.icns "$APP/Contents/Resources/"   # made from assets/logo.svg by scripts/make-icon.sh
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Kite</string>
-    <key>CFBundleDisplayName</key><string>Kite</string>
-    <key>CFBundleIdentifier</key><string>com.mwrnk.kite</string>
+    <key>CFBundleName</key><string>$NAME</string>
+    <key>CFBundleDisplayName</key><string>$NAME</string>
+    <key>CFBundleIdentifier</key><string>$ID</string>
     <key>CFBundleExecutable</key><string>Kite</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>

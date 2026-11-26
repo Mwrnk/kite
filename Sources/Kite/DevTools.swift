@@ -88,6 +88,32 @@ enum DevTools {
                         c.window?.setFrame(NSRect(x: 120, y: 140, width: 1000, height: 650), display: false)
                     }
                     print("edited; quitting")
+                case "run-task":
+                    // Trial check for ⌘R: runs the front file's task, answers one prompt with KITE_TEST_INPUT,
+                    // optionally clicks the first file:line link, then prints what the panel shows.
+                    guard let c = EditorWindowController.all.first else { print("no window"); break }
+                    c.runTask(nil)
+                    let input = ProcessInfo.processInfo.environment["KITE_TEST_INPUT"]
+                    let wait = Double(ProcessInfo.processInfo.environment["KITE_TEST_WAIT"] ?? "") ?? 4
+                    DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+                        MainActor.assumeIsolated {
+                            if let input { c.runPanel.sendForTesting(input) }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                MainActor.assumeIsolated {
+                                    print("PANEL-BEGIN\n\(c.runPanel.shownText)\nPANEL-END running=\(c.runPanel.isRunning)")
+                                    if c.runPanel.isRunning { c.stopTask(nil) }
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                        MainActor.assumeIsolated {
+                                            let header = c.runPanel.shownText.split(separator: "\n").first ?? ""
+                                            print("after stop: running=\(c.runPanel.isRunning) \(header)")
+                                            NSApp.terminate(nil)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return
                 case "toggle-file-list":
                     // Presses ⌘B twice through the app, as typed, and reports the file list after each.
                     guard let c = EditorWindowController.all.first, let window = c.window else { print("no window"); break }

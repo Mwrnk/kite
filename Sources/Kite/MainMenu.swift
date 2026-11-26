@@ -105,6 +105,14 @@ enum MainMenu {
         item(view, "Show Bots", #selector(EditorWindowController.toggleBots(_:)), "b", [.command, .shift])
         item(view, "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control])
 
+        let run = submenu(main, "Run")
+        item(run, "Run", #selector(EditorWindowController.runTask(_:)), "r")
+        item(run, "Run Command…", #selector(EditorWindowController.runCommandPrompt(_:)), "r", [.command, .shift])
+        item(run, "Stop", #selector(EditorWindowController.stopTask(_:)), ".")
+        run.addItem(.separator())
+        item(run, "Show Output", #selector(EditorWindowController.toggleRunPanel(_:)), "j")
+        item(run, "Open in Terminal", #selector(EditorWindowController.openTerminal(_:)), "t", [.command, .option])
+
         let window = submenu(main, "Window")
         item(window, "Minimize", #selector(NSWindow.performMiniaturize(_:)), "m")
         item(window, "Zoom", #selector(NSWindow.performZoom(_:)), "")

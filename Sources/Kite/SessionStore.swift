@@ -41,10 +41,10 @@ enum SessionStore {
     /// Set once Kite has saved for quitting; later saves would see already-cleared documents.
     static var isQuitting = false
 
-    /// ~/Library/Application Support/Kite, or KITE_SESSION_DIR (for tests).
+    /// ~/Library/Application Support/Kite (Kite Test for a KITE_TEST_BUILD app), or KITE_SESSION_DIR (for tests).
     static var directory: URL = ProcessInfo.processInfo.environment["KITE_SESSION_DIR"].map { URL(fileURLWithPath: $0) }
         ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Kite", isDirectory: true)
+            .appendingPathComponent(Bundle.main.bundleIdentifier == "com.mwrnk.kite.test" ? "Kite Test" : "Kite", isDirectory: true)
     static var sessionURL: URL { directory.appendingPathComponent("session.json") }
     static var backupsURL: URL { directory.appendingPathComponent("backups", isDirectory: true) }
 
