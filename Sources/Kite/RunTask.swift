@@ -16,11 +16,15 @@ struct RunTask: Equatable {
     }
 
     /// The nearest project file from the open file's folder up to the project root decides;
-    /// with none, the open file itself is run by its type.
+    /// with none, the open file itself is run by its type. Folders above the project you opened
+    /// (or, with no project, above the file's own folder) are never looked at: a build file there
+    /// isn't one you chose to run.
     static func detect(file: URL?, root: URL?) -> RunTask? {
-        let start = file?.deletingLastPathComponent() ?? root
-        var folder = start?.standardizedFileURL
-        let stop = root?.standardizedFileURL.path
+        let start = (file?.deletingLastPathComponent() ?? root)?.standardizedFileURL
+        let rootPath = root?.standardizedFileURL.path
+        let fileInsideRoot = rootPath.map { start?.path == $0 || start?.path.hasPrefix($0 + "/") == true } ?? false
+        let stop = fileInsideRoot ? rootPath : start?.path
+        var folder = start
         let fm = FileManager.default
         while let dir = folder {
             func has(_ name: String) -> Bool { fm.fileExists(atPath: dir.appendingPathComponent(name).path) }
