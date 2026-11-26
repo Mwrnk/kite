@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/icon.png" width="128" alt="Kite"></p>
+<p align="center"><img src="assets/header.gif" width="880" alt="Kite: Swift code typing itself into the editor, then ⌘R runs it and the output appears underneath"></p>
 
 # Kite
 
@@ -13,6 +13,7 @@ scripts/bundle.sh            # builds build/Kite.app (release)
 open build/Kite.app
 swift test                   # buffer, editing, undo, multiple cursors, brackets, find, syntax, markdown
 scripts/make-icon.sh         # remakes the app icon (assets/AppIcon.icns) from assets/logo.svg
+scripts/make-header.sh       # remakes the README's animated header (assets/header.gif) from assets/header.html
 ```
 
 While developing you can run the binary directly with files: `.build/debug/Kite file.swift`.

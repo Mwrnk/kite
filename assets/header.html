@@ -1,0 +1,84 @@
+<!doctype html>
+<!-- The README header, animated. scripts/make-header.sh renders it frame by frame into assets/header.gif. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kite</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0B0C0E}
+.ln{display:inline-block;overflow:hidden;white-space:pre;vertical-align:top;width:0}
+/* One 9 s loop: the code types itself in, ⌘R lights up, the output appears, everything fades. */
+@keyframes l1{0%{width:0;opacity:1}10%{width:var(--w)}92%{width:var(--w);opacity:1}97%,100%{width:var(--w);opacity:0}}
+@keyframes l2{0%,10%{width:0;opacity:1}18%{width:var(--w)}92%{width:var(--w);opacity:1}97%,100%{width:var(--w);opacity:0}}
+@keyframes l3{0%,18%{width:0;opacity:1}28%{width:var(--w)}92%{width:var(--w);opacity:1}97%,100%{width:var(--w);opacity:0}}
+@keyframes l4{0%,28%{width:0;opacity:1}38%{width:var(--w)}92%{width:var(--w);opacity:1}97%,100%{width:var(--w);opacity:0}}
+@keyframes l5{0%,38%{width:0;opacity:1}40%{width:var(--w)}92%{width:var(--w);opacity:1}97%,100%{width:var(--w);opacity:0}}
+@keyframes l6{0%,40%{width:0;opacity:1}42%{width:var(--w)}92%{width:var(--w);opacity:1}97%,100%{width:var(--w);opacity:0}}
+@keyframes l8{0%,46%{width:0;opacity:1}56%{width:var(--w)}92%{width:var(--w);opacity:1}97%,100%{width:var(--w);opacity:0}}
+@keyframes key{0%,57%{background:#17181B;color:#7E838B}59%,63%{background:#2D51D2;color:#FFFFFF}66%,100%{background:#17181B;color:#7E838B}}
+@keyframes panel{0%,59%{opacity:0}60%,92%{opacity:1}97%,100%{opacity:0}}
+@keyframes o1{0%,63%{opacity:0}64%,92%{opacity:1}97%,100%{opacity:0}}
+@keyframes o2{0%,66%{opacity:0}67%,92%{opacity:1}97%,100%{opacity:0}}
+@keyframes o3{0%,69%{opacity:0}70%,92%{opacity:1}97%,100%{opacity:0}}
+@keyframes caret{0%{opacity:0}46%{opacity:1}97%{opacity:0}}
+@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+</style>
+</head>
+<body>
+<div style="width: 1280px; height: 640px; box-sizing: border-box; background: #0B0C0E; color: #D6D8DC; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; display: flex; align-items: center; gap: 64px; padding: 0 72px; overflow: hidden">
+<div style="width: 380px; flex-shrink: 0; display: flex; flex-direction: column; gap: 28px">
+<div style="display: flex; align-items: center; gap: 20px">
+<img src="logo.svg" alt="" style="width: 72px; height: 72px; border-radius: 16px">
+<h1 style="margin: 0; font-size: 64px; font-weight: 700; letter-spacing: -0.02em; color: #E6E8EB">Kite</h1>
+</div>
+<p style="margin: 0; font-size: 22px; line-height: 1.45; color: #D6D8DC">A small, fast, native code editor for macOS, for people who write code by hand.</p>
+<div style="display: flex; align-items: center; gap: 14px; font-size: 15px; color: #9DA1A8">
+<span style="padding: 6px 12px; border: 1px solid #2A2C31; border-radius: 8px; font-weight: 500; animation: key 9s linear infinite">⌘R</span>
+<span>runs it, right underneath</span>
+</div>
+</div>
+<div style="flex: 1; min-width: 0; height: 500px; border: 1px solid #2A2C31; border-radius: 12px; background: #111214; display: flex; flex-direction: column; overflow: hidden">
+<div style="height: 38px; flex-shrink: 0; display: flex; align-items: center; border-bottom: 1px solid #222428; font-size: 12px">
+<div style="width: 150px; flex-shrink: 0; padding-left: 18px; color: #7E838B">kite</div>
+<div style="display: flex; gap: 22px; padding-left: 14px">
+<span style="color: #E6E8EB">greet.swift</span>
+<span style="color: #7E838B">README.md</span>
+</div>
+</div>
+<div style="flex: 1; min-height: 0; display: flex">
+<div style="width: 150px; flex-shrink: 0; border-right: 1px solid #222428; padding: 14px 0 0 18px; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: #9DA1A8">
+<span style="color: #6E737B">Sources/</span>
+<span style="padding-left: 12px; color: #E6E8EB">greet.swift</span>
+<span style="padding-left: 12px">main.swift</span>
+<span>Package.swift</span>
+<span>README.md</span>
+</div>
+<div style="flex: 1; min-width: 0; padding: 14px 0 0 0; font-size: 13px; line-height: 23px; display: flex">
+<div style="width: 44px; flex-shrink: 0; text-align: right; color: #555A62; padding-right: 16px">1<br>2<br>3<br>4<br>5<br>6<br>7<br>8</div>
+<div style="display: flex; flex-direction: column; color: #D6D8DC">
+<span class="ln" style="--w: 38ch; animation: l1 9s steps(38, end) infinite"><span style="color: #7A7F87">// Says hello to everyone on the list.</span></span>
+<span class="ln" style="--w: 31ch; animation: l2 9s steps(31, end) infinite"><span style="color: #8FA8D6">func</span> greet(_ names: [<span style="color: #8FA8D6">String</span>]) {</span>
+<span class="ln" style="--w: 41ch; animation: l3 9s steps(41, end) infinite">    <span style="color: #8FA8D6">for</span> (i, name) <span style="color: #8FA8D6">in</span> names.enumerated() {</span>
+<span class="ln" style="--w: 42ch; animation: l4 9s steps(42, end) infinite">        print(<span style="color: #A6C48F">"\(i + </span><span style="color: #D9A774">1</span><span style="color: #A6C48F">). Hello, \(name)!"</span>)</span>
+<span class="ln" style="--w: 5ch; animation: l5 9s steps(5, end) infinite">    }</span>
+<span class="ln" style="--w: 1ch; animation: l6 9s steps(1, end) infinite">}</span>
+<span style="height: 23px"></span>
+<span style="display: flex; align-items: center"><span class="ln" style="--w: 32ch; animation: l8 9s steps(32, end) infinite">greet([<span style="color: #A6C48F">"Ada"</span>, <span style="color: #A6C48F">"Grace"</span>, <span style="color: #A6C48F">"Linus"</span>])</span><span style="display: inline-block; animation: caret 9s step-end infinite"><span style="display: inline-block; width: 2px; height: 16px; background: #E6E8EB; margin-left: 1px; animation: blink 1s step-end infinite"></span></span></span>
+</div>
+</div>
+</div>
+<div style="height: 128px; flex-shrink: 0; border-top: 1px solid #222428; padding: 10px 18px; box-sizing: border-box; font-size: 12px; line-height: 20px; display: flex; flex-direction: column">
+<div style="color: #7E838B; white-space: pre; animation: panel 9s linear infinite">swift run    in kite/    done in 1.2 s</div>
+<div style="color: #D6D8DC; animation: o1 9s linear infinite">1. Hello, Ada!</div>
+<div style="color: #D6D8DC; animation: o2 9s linear infinite">2. Hello, Grace!</div>
+<div style="color: #D6D8DC; animation: o3 9s linear infinite">3. Hello, Linus!</div>
+</div>
+<div style="height: 28px; flex-shrink: 0; border-top: 1px solid #222428; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; font-size: 11px; color: #7E838B">
+<span>kite · main</span>
+<span style="white-space: pre">greet    spaces 4    Swift</span>
+</div>
+</div>
+</div>
+</body>
+</html>
